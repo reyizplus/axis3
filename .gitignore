@@ -1,0 +1,64 @@
+# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+
+# Development Documentation (Local only, not for GitHub)
+AGENTS.md
+CLAUDE.md
+DOCKER.md
+
+# Debug Files
+lint-output.txt
+
+# Supabase Development Helpers
+supabase/APPLY_MIGRATIONS.sql
+supabase/CONSOLIDATED_MIGRATION.sql
+supabase/diagnostics/
+
+# Test Scripts
+scripts/test-*.js
+
+# PowerShell Utility Scripts
+scripts/*.ps1
+
+# dependencies
+/node_modules
+/.pnp
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/versions
+
+# testing
+/coverage
+
+# next.js
+/.next/
+/out/
+
+# production
+/build
+
+# misc
+.DS_Store
+*.pem
+
+# debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# env files (can opt-in for committing if needed)
+.env*
+!.env.example
+
+# logs
+/logs/*.log
+
+# vercel
+.vercel
+
+# typescript
+*.tsbuildinfo
+next-env.d.ts

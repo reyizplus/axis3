@@ -1,0 +1,149 @@
+# Axis3 - Docker Compose Configuration
+# Full Docker-Native Development Environment
+
+services:
+  # PostgreSQL Database (Local Development)
+  postgres:
+    image: postgres:16-alpine
+    container_name: axis3-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: axis3_dev
+      POSTGRES_USER: axis3_user
+      POSTGRES_PASSWORD: axis3_dev_password
+      POSTGRES_HOST_AUTH_METHOD: trust
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U axis3_user -d axis3_dev"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - axis3-network
+
+  # Redis Cache (Local Development)
+  redis:
+    image: redis:7-alpine
+    container_name: axis3-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    networks:
+      - axis3-network
+
+  # Next.js Application (Development)
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    container_name: axis3-app
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    env_file:
+      - .env.local
+    environment:
+      # Node Environment
+      NODE_ENV: development
+      NEXT_TELEMETRY_DISABLED: 1
+      
+      # Database (Local PostgreSQL)
+      DATABASE_URL: postgresql://axis3_user:axis3_dev_password@postgres:5432/axis3_dev
+      
+      # Redis (Local)
+      REDIS_URL: redis://redis:6379
+
+      # Windows/WSL bind-mount'larda dosya degisiklikleri inotify ile
+      # algilanmadigi icin webpack/watchpack polling ile izler.
+      WATCHPACK_POLLING: "true"
+      CHOKIDAR_USEPOLLING: "true"
+    volumes:
+      # Source code hot-reload
+      - ./src:/app/src
+      - ./public:/app/public
+      - ./.env.local:/app/.env.local
+      - ./next.config.ts:/app/next.config.ts
+      - ./tailwind.config.ts:/app/tailwind.config.ts
+      - ./tsconfig.json:/app/tsconfig.json
+
+      # Log kaliciligi: container yeniden baslasa da loglar korunur
+      - ./logs:/app/logs
+      
+      # Anonymous volume to prevent node_modules conflicts
+      - /app/node_modules
+      - /app/.next
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3000/api/health', (r) => {process.exit(r.statusCode === 200 ? 0 : 1)})"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    networks:
+      - axis3-network
+
+  # Production Build (Optional - for testing)
+  app-prod:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: axis3-app-prod
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    env_file:
+      - .env.production
+    environment:
+      # Node Environment
+      NODE_ENV: production
+      NEXT_TELEMETRY_DISABLED: 1
+      
+      # Database (Local PostgreSQL)
+      DATABASE_URL: postgresql://axis3_user:axis3_dev_password@postgres:5432/axis3_dev
+      
+      # Redis (Local)
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3000/api/health', (r) => {process.exit(r.statusCode === 200 ? 0 : 1)})"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 40s
+    networks:
+      - axis3-network
+    profiles:
+      - production
+
+networks:
+  axis3-network:
+    driver: bridge
+    name: axis3-network
+
+volumes:
+  postgres_data:
+    name: axis3-postgres-data
+  redis_data:
+    name: axis3-redis-data

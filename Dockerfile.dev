@@ -1,0 +1,32 @@
+# Axis3 - Development Dockerfile
+# Hot-reload enabled with volume mounting
+
+FROM node:26-alpine
+
+# Install dependencies for native modules
+RUN apk add --no-cache libc6-compat
+
+WORKDIR /app
+
+# Copy package files
+COPY package.json package-lock.json ./
+
+# Install all dependencies (including devDependencies)
+RUN npm ci
+
+# Apply next-themes patch (suppress React 19 script tag warning)
+COPY scripts scripts/
+RUN node scripts/patch-next-themes.js
+
+# Copy source code
+COPY . .
+
+# Expose port
+EXPOSE 3000
+
+# Set environment
+ENV NODE_ENV=development
+ENV NEXT_TELEMETRY_DISABLED=1
+
+# Start development server with hot-reload
+CMD ["npm", "run", "dev"]
