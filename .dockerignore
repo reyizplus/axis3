@@ -49,3 +49,9 @@ docker-compose.yml
 
 # Debug
 *.log
+
+# Application logs: prod imajina asla log dosyasi girmemeli.
+# `*.log` yalnizca kok dizini eslestirdigi icin `logs/app.log` imaja giriyordu
+# ve named volume ilk olusurken dev loglariyla doluyordu.
+logs
+**/*.log

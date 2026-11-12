@@ -121,6 +121,14 @@ services:
       
       # Redis (Local)
       REDIS_URL: redis://redis:6379
+
+      # Log yazimi container ici loopback uzerinden yapilir (genel alan adi degil)
+      INTERNAL_API_BASE_URL: http://127.0.0.1:3000
+    volumes:
+      # Log kaliciligi: container yeniden olusturulsa da loglar korunur.
+      # Named volume kullaniliyor; bind mount'ta host dizini root'a ait olup
+      # nextjs (uid 1001) kullanicisi yazamayabilir.
+      - logs_data:/app/logs
     depends_on:
       postgres:
         condition: service_healthy
@@ -147,3 +155,5 @@ volumes:
     name: axis3-postgres-data
   redis_data:
     name: axis3-redis-data
+  logs_data:
+    name: axis3-logs-data

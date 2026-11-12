@@ -75,4 +75,7 @@ ENV HOSTNAME="0.0.0.0"
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
   CMD node -e "require('http').get('http://localhost:3000/api/health', (r) => {process.exit(r.statusCode === 200 ? 0 : 1)})"
 
-CMD ["sh", "-c", "node server.js 2>&1 | tee -a /app/logs/app.log"]
+# Uygulama loglari (logs/app.log) dogrudan `appendLog` tarafindan yazilir.
+# Konsol cikisi Docker loglarina gider; dosyaya tee ile karistirilmaz
+# (aksi halde ayni satirlar iki kez ve rotation bozuk sekilde yaziliyordu).
+CMD ["node", "server.js"]
