@@ -47,15 +47,18 @@ function getClientIP(request: NextRequest): string {
 }
 
 const INTERNAL_API_TIMEOUT_MS = 8000;
+const SUPABASE_REST_TIMEOUT_MS = 8000;
 
 /**
- * Internal API adresi.
+ * Internal API adresi (yedek yol).
  *
  * ONEMLI: Prod ortaminda `request.nextUrl.origin` genel adresi (https://axis3.com.tr)
  * dondurur. Container icinden kendi genel adresine istek atmak Cloudflare/nginx/
- * hairpin NAT nedeniyle basarisiz olabiliyordu ve hata sessizce yutuldugu icin
- * prod'da hic log olusmuyordu. Bu yuzden varsayilan olarak loopback kullanilir.
- * Gerekirse INTERNAL_API_BASE_URL ile override edilebilir.
+ * hairpin NAT nedeniyle basarisiz olabiliyordu. Bu yuzden varsayilan olarak loopback
+ * kullanilir; INTERNAL_API_BASE_URL ile override edilebilir.
+ *
+ * NOT: Asil yol artik dogrudan Supabase REST'e yazmaktir (asagiya bakin). Bu
+ * fonksiyon sadece servis anahtari tanimli degilse yedek olarak kullanilir.
  */
 function getInternalBaseUrl(): string {
   const configured = process.env.INTERNAL_API_BASE_URL?.trim();
@@ -89,29 +92,108 @@ async function postInternalLog(path: string, payload: Record<string, unknown>): 
   }
 }
 
+interface SupabaseRestConfig {
+  url: string;
+  key: string;
+}
+
 /**
- * Send activity log to internal API
+ * Aktivite loglarini dogrudan Supabase REST API'sine yazmak icin gereken bilgiler.
+ *
+ * Neden: proxy'nin kendi API'sine (loopback veya genel adres) HTTP istegi atmasi
+ * ortama baglidir (port, host binding, reverse proxy, hairpin NAT...). Prod'da bu
+ * istek sessizce basarisiz oldugu icin aktivite kayitlari hic olusmuyordu.
+ * Servis anahtari ile REST cagrisi bu bagimliligi tamamen kaldirir.
+ */
+function getSupabaseRestConfig(): SupabaseRestConfig | null {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL?.trim();
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY?.trim();
+  if (!url || !key) return null;
+  return { url: url.replace(/\/+$/, ''), key };
+}
+
+async function insertRow(
+  config: SupabaseRestConfig,
+  table: 'user_activity_logs' | 'ip_activity_logs' | 'audit_logs',
+  row: Record<string, unknown>
+): Promise<void> {
+  try {
+    const response = await fetch(`${config.url}/rest/v1/${table}`, {
+      method: 'POST',
+      headers: {
+        apikey: config.key,
+        Authorization: `Bearer ${config.key}`,
+        'Content-Type': 'application/json',
+        Prefer: 'return=minimal',
+      },
+      body: JSON.stringify(row),
+      cache: 'no-store',
+      signal: AbortSignal.timeout(SUPABASE_REST_TIMEOUT_MS),
+    });
+
+    if (!response.ok) {
+      const detail = await response.text().catch(() => '');
+      console.error(
+        `[Proxy] ${table} kaydi yazilamadi (${response.status})${detail ? `: ${detail.slice(0, 300)}` : ''}`
+      );
+    }
+  } catch (error) {
+    console.error(
+      `[Proxy] ${table} kaydi basarisiz:`,
+      error instanceof Error ? error.message : error
+    );
+  }
+}
+
+/**
+ * Send activity log. Servis anahtari varsa dogrudan veritabanina yazilir;
+ * yoksa internal API yoluna dusulur.
  */
 async function sendActivityLog(pathname: string, user: any | null, ip: string, request: NextRequest) {
   const userAgent = request.headers.get('user-agent') || null;
   const deviceType = detectDeviceType(userAgent);
+  const resolvedIP = ip && ip !== 'unknown' ? ip : null;
+  const config = getSupabaseRestConfig();
 
   if (user) {
-    await postInternalLog('/api/internal/activity-log', {
-      user_id: user.id,
-      user_email: user.email || '',
-      user_name: user.user_metadata?.full_name || user.email || '',
-      page_url: pathname,
-      ip_address: ip,
-      user_agent: userAgent,
-      device_type: deviceType,
-    });
+    if (!config) {
+      await postInternalLog('/api/internal/activity-log', {
+        user_id: user.id,
+        user_email: user.email || '',
+        user_name: user.user_metadata?.full_name || user.email || '',
+        page_url: pathname,
+        ip_address: ip,
+        user_agent: userAgent,
+        device_type: deviceType,
+      });
+      return;
+    }
+
+    await Promise.allSettled([
+      insertRow(config, 'user_activity_logs', {
+        user_id: user.id,
+        ip_address: resolvedIP,
+        user_agent: userAgent,
+        device_type: deviceType,
+        page_url: pathname,
+      }),
+      insertRow(config, 'audit_logs', {
+        user_id: user.id,
+        action: 'page_view',
+        entity_type: 'page',
+        entity_id: pathname,
+        ip_address: resolvedIP,
+        user_agent: userAgent,
+      }),
+    ]);
     return;
   }
 
-  if (ip && ip !== 'unknown') {
+  if (!resolvedIP) return;
+
+  if (!config) {
     await postInternalLog('/api/internal/ip-activity-log', {
-      ip_address: ip,
+      ip_address: resolvedIP,
       user_id: null,
       user_email: '',
       user_name: '',
@@ -119,7 +201,16 @@ async function sendActivityLog(pathname: string, user: any | null, ip: string, r
       user_agent: userAgent,
       device_type: deviceType,
     });
+    return;
   }
+
+  await insertRow(config, 'ip_activity_logs', {
+    ip_address: resolvedIP,
+    user_id: null,
+    user_agent: userAgent,
+    device_type: deviceType,
+    page_url: pathname,
+  });
 }
 
 /**
@@ -167,9 +258,15 @@ export async function proxy(request: NextRequest, event: NextFetchEvent) {
   // Log request (unless excluded)
   if (!shouldSkipLogging) {
     logRequest(pathname, user, clientIP);
-    // waitUntil: yanit dondukten sonra da log istegi tamamlanir.
+    // waitUntil: yanit dondukten sonra da log yazimi tamamlanir.
     // (Fire-and-forget prod'da istegin yarida kesilmesine yol acabiliyordu.)
-    event.waitUntil(sendActivityLog(pathname, user, clientIP, request));
+    const activityTask = sendActivityLog(pathname, user, clientIP, request);
+    try {
+      event.waitUntil(activityTask);
+    } catch {
+      // waitUntil desteklenmiyorsa arka planda devam etsin.
+      void activityTask;
+    }
   }
 
   // Check if current path is protected

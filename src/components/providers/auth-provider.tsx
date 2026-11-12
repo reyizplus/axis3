@@ -42,7 +42,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [loading, setLoading] = useState(true);
   const [mounted, setMounted] = useState(false);
   const router = useRouter();
-  const supabaseRef = useRef(createClient());
+  // Client yalnizca ilk render'da olusturulur (her render'da createClient()
+  // cagirmak gereksiz is ve oturum kilidiyle ilgili karisikliklara yol acabilir).
+  const supabaseRef = useRef<ReturnType<typeof createClient> | null>(null);
+  if (!supabaseRef.current) {
+    supabaseRef.current = createClient();
+  }
   const userRef = useRef<User | null>(null);
 
   useEffect(() => {
@@ -51,7 +56,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const loadUserProfile = useCallback(async (userId: string) => {
     try {
-      const supabase = supabaseRef.current;
+      const supabase = supabaseRef.current!;
       const { data } = await supabase
         .from('users')
         .select('id, email, full_name, phone, is_corporate, email_verified, two_factor_enabled')
@@ -98,7 +103,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (!mounted) return;
 
-    const supabase = supabaseRef.current;
+    const supabase = supabaseRef.current!;
 
     supabase.auth.getSession().then(async ({ data: { session } }) => {
       setUser(session?.user ?? null);
@@ -141,7 +146,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const signOut = async () => {
     cartService.setUserId(null);
     clearStoreCart();
-    await supabaseRef.current.auth.signOut();
+    await supabaseRef.current!.auth.signOut();
     setUser(null);
     setProfile(null);
     router.push('/login');

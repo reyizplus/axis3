@@ -41,7 +41,7 @@ export default function RootLayout({
         
         {/* Theme initialization - prevents flash of wrong theme. Must be sync/blocking before React hydration. Server-rendered to avoid React 19 client script warning. */}
         <script dangerouslySetInnerHTML={{ __html: `
-          (function(){var e="class",i="theme",s="light",u=null,m=["light","dark"],a=null,l=true,h=true;let d=document.documentElement,w=["light","dark"];function p(n){(Array.isArray(e)?e:[e]).forEach(function(y){var k=y==="class",S=k&&a?m.map(function(f){return a[f]||f}):m;k?(d.classList.remove.apply(d.classList,S),d.classList.add(a&&a[n]?a[n]:n)):d.setAttribute(y,n)}),R(n)}function R(n){h&&w.indexOf(n)!==-1&&(d.style.colorScheme=n)}function c(){return window.matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light"}if(u)p(u);else try{var n=localStorage.getItem(i)||s,y=l&&n==="system"?c():n;p(y)}catch(n){}}})();
+          (function(){var e="class",i="theme",s="light",u=null,m=["light","dark"],a=null,l=true,h=true;let d=document.documentElement,w=["light","dark"];function p(n){(Array.isArray(e)?e:[e]).forEach(function(y){var k=y==="class",S=k&&a?m.map(function(f){return a[f]||f}):m;k?(d.classList.remove.apply(d.classList,S),d.classList.add(a&&a[n]?a[n]:n)):d.setAttribute(y,n)}),R(n)}function R(n){h&&w.indexOf(n)!==-1&&(d.style.colorScheme=n)}function c(){return window.matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light"}if(u)p(u);else try{var n=localStorage.getItem(i)||s,y=l&&n==="system"?c():n;p(y)}catch(n){}})();
         `}} />
 
         {/* Critical CSS - Inline for LCP optimization */}

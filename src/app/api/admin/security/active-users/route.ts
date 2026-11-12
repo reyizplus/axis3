@@ -131,7 +131,8 @@ export async function GET() {
       if (row.user_id) userIds.add(row.user_id);
     }
 
-    const userMap: Record<string, UserInfo> = {};    if (userIds.size > 0) {
+    const userMap: Record<string, UserInfo> = {};
+    if (userIds.size > 0) {
       const { data: users } = await supabase
         .from('users')
         .select('id, email, full_name')

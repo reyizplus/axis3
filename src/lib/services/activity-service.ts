@@ -20,8 +20,9 @@ export async function logUserActivity(params: {
   const deviceType = detectDeviceType(params.userAgent);
 
   try {
-    const baseUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000';
-    await fetch(`${baseUrl}/api/internal/activity-log`, {
+    // Ayni origin'e (goreli URL) istek atilir. Mutlak URL kullanildiginda
+    // www/apex farki veya CSP connect-src kisitlamasi istegi bloke edebiliyordu.
+    await fetch('/api/internal/activity-log', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({

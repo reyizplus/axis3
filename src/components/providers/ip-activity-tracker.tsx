@@ -15,8 +15,8 @@ export function IPActivityTracker() {
     if (excluded.some(p => pathname.startsWith(p))) return;
 
     try {
-      const baseUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000';
-      fetch(`${baseUrl}/api/internal/ip-activity-log`, {
+      // Goreli URL: ayni origin. Mutlak URL CSP/www-apex farkinda bloke oluyordu.
+      fetch('/api/internal/ip-activity-log', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
