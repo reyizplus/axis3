@@ -1,6 +1,5 @@
 import type { Metadata } from 'next';
 import { generateMetadata as generateSEOMetadata } from '@/lib/utils/seo';
-import Link from 'next/link';
 import { Cookie, Shield, Info, Settings, XCircle, Mail } from 'lucide-react';
 import { PublicHeader } from '@/components/layout/public-header';
 import { PublicFooter } from '@/components/layout/public-footer';
@@ -64,22 +63,18 @@ export default function CerezPolitikasiPage() {
 
           <div className="glass-light dark:glass rounded-2xl p-8 space-y-6">
             <div className="space-y-3">
-              <h3 className="text-lg font-semibold">Zorunlu Çerezler</h3>
+              <h3 className="text-lg font-semibold">Zorunlu Çerezler ve Yerel Depolama</h3>
               <p className="text-muted-foreground">
                 Bu çerezler, web sitemizin düzgün çalışması için gereklidir. Oturum yönetimi, güvenlik ve site temel işlevleri için kullanılırlar. Bu çerezlerin devre dışı bırakılması site işlevselliğini etkileyebilir.
               </p>
               <ul className="space-y-2 text-muted-foreground">
                 <li className="flex items-start gap-2">
                   <div className="h-1.5 w-1.5 rounded-full bg-primary mt-2" />
-                  <span><strong className="text-foreground">sb-auth-token:</strong> Supabase kimlik doğrulama oturumu</span>
+                  <span><strong className="text-foreground">sb-&lt;proje&gt;-auth-token:</strong> Supabase kimlik doğrulama oturumu (büyük oturumlarda .0, .1 şeklinde parçalanabilir)</span>
                 </li>
                 <li className="flex items-start gap-2">
                   <div className="h-1.5 w-1.5 rounded-full bg-primary mt-2" />
-                  <span><strong className="text-foreground">__session:</strong> Oturum yönetimi</span>
-                </li>
-                <li className="flex items-start gap-2">
-                  <div className="h-1.5 w-1.5 rounded-full bg-primary mt-2" />
-                  <span><strong className="text-foreground">cookie-consent:</strong> Çerez tercihlerinizin hatırlanması</span>
+                  <span><strong className="text-foreground">axis3-cookie-consent (localStorage):</strong> Çerez tercihlerinizin hatırlanması</span>
                 </li>
               </ul>
             </div>
@@ -87,25 +82,35 @@ export default function CerezPolitikasiPage() {
             <div className="space-y-3">
               <h3 className="text-lg font-semibold">Analitik ve Performans Çerezleri</h3>
               <p className="text-muted-foreground">
-                Bu çerezler, ziyaretçilerin web sitemizi nasıl kullandığı hakkında bilgi toplamamıza yardımcı olur. Sayfa ziyaret sayıları, hangi sayfaların daha popüler olduğu gibi anonim istatistikler elde etmemizi sağlar.
+                Bu çerezler, ziyaretçilerin web sitemizi nasıl kullandığı hakkında bilgi toplamamıza yardımcı olur. Sayfa ziyaret sayıları, hangi sayfaların daha popüler olduğu gibi anonim istatistikler elde etmemizi sağlar. Bu çerezler yalnızca çerez bildiriminde <strong className="text-foreground">&ldquo;Kabul Et&rdquo;</strong> seçildikten sonra oluşturulur.
               </p>
               <ul className="space-y-2 text-muted-foreground">
                 <li className="flex items-start gap-2">
                   <div className="h-1.5 w-1.5 rounded-full bg-primary mt-2" />
-                  <span><strong className="text-foreground">_ga, _gid:</strong> Google Analytics tarafından kullanıcı istatistikleri</span>
+                  <span><strong className="text-foreground">_ga, _ga_&lt;kimlik&gt;:</strong> Google Analytics tarafından kullanıcı istatistikleri</span>
                 </li>
                 <li className="flex items-start gap-2">
                   <div className="h-1.5 w-1.5 rounded-full bg-primary mt-2" />
-                  <span><strong className="text-foreground">_gat:</strong> Google Analytics talep hız sınırlama</span>
+                  <span><strong className="text-foreground">_gid:</strong> Google Analytics tarafından günlük ziyaretçi ayrımı</span>
                 </li>
               </ul>
             </div>
 
             <div className="space-y-3">
-              <h3 className="text-lg font-semibold">İşlevsellik Çerezleri</h3>
+              <h3 className="text-lg font-semibold">İşlevsellik Tercihleri</h3>
               <p className="text-muted-foreground">
-                Bu çerezler, dil tercihleri, tema seçenekleri gibi kişisel tercihlerinizi hatırlayarak size gelişmiş bir kullanıcı deneyimi sunar.
+                Tema ve sepet gibi kişisel tercihleriniz tarayıcınızın yerel depolamasında (localStorage) saklanır; bunlar üçüncü taraflarla paylaşılmaz:
               </p>
+              <ul className="space-y-2 text-muted-foreground">
+                <li className="flex items-start gap-2">
+                  <div className="h-1.5 w-1.5 rounded-full bg-primary mt-2" />
+                  <span><strong className="text-foreground">theme (localStorage):</strong> Açık/koyu tema tercihi</span>
+                </li>
+                <li className="flex items-start gap-2">
+                  <div className="h-1.5 w-1.5 rounded-full bg-primary mt-2" />
+                  <span><strong className="text-foreground">axis3_cart_store (localStorage):</strong> Sepetinizdeki ürünler</span>
+                </li>
+              </ul>
             </div>
           </div>
         </section>
@@ -207,11 +212,19 @@ export default function CerezPolitikasiPage() {
             <ul className="space-y-3 text-muted-foreground">
               <li className="flex items-start gap-2">
                 <div className="h-1.5 w-1.5 rounded-full bg-primary mt-2" />
-                <span><strong className="text-foreground">Google Analytics:</strong> Kullanıcı davranışlarını anonim olarak analiz etmek için</span>
+                <span><strong className="text-foreground">Google Analytics:</strong> Kullanıcı davranışlarını anonim olarak analiz etmek için (yalnızca onay sonrası)</span>
               </li>
               <li className="flex items-start gap-2">
                 <div className="h-1.5 w-1.5 rounded-full bg-primary mt-2" />
                 <span><strong className="text-foreground">Supabase:</strong> Kimlik doğrulama ve oturum yönetimi için</span>
+              </li>
+              <li className="flex items-start gap-2">
+                <div className="h-1.5 w-1.5 rounded-full bg-primary mt-2" />
+                <span><strong className="text-foreground">iyzico:</strong> Ödeme sayfasında ödeme işleminin güvenli şekilde tamamlanması için</span>
+              </li>
+              <li className="flex items-start gap-2">
+                <div className="h-1.5 w-1.5 rounded-full bg-primary mt-2" />
+                <span><strong className="text-foreground">Cloudflare:</strong> Site güvenliği ve trafik ölçümü için (çerez kullanmayan analiz)</span>
               </li>
             </ul>
             <p className="text-muted-foreground leading-relaxed mt-4">

@@ -5,19 +5,29 @@
  */
 
 import { createServerClient } from '@supabase/ssr';
-import { cookies } from 'next/headers';
+import { cookies, headers } from 'next/headers';
 import { Database } from '@/types/database';
+import { getSupabaseCookieOptions } from './cookie-options';
 
 /**
  * Create a Supabase client for use in Server Components
  */
 export async function createClient() {
   const cookieStore = await cookies();
+  const requestHeaders = await headers();
+
+  // Proxy (middleware) ve browser istemcisiyle aynı çerez seçenekleri:
+  // prod'da `.axis3.com.tr` + HTTPS'te `secure`, yerelde host-only.
+  const cookieOptions = getSupabaseCookieOptions({
+    hostname: requestHeaders.get('host'),
+    forwardedProto: requestHeaders.get('x-forwarded-proto'),
+  });
 
   return createServerClient<Database>(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
     {
+      cookieOptions,
       cookies: {
         getAll() {
           return cookieStore.getAll();
@@ -53,6 +63,6 @@ export function createServiceClient() {
           // No-op for service client
         },
       },
-    }
+    },
   );
 }

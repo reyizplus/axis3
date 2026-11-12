@@ -1,23 +1,18 @@
 import { createServerClient } from '@supabase/ssr';
 import { type NextRequest, NextResponse } from 'next/server';
 import { Database } from '@/types/database';
-
-/**
- * Extract parent domain from hostname for cookie sharing across subdomains.
- * Returns undefined for localhost/development.
- */
-function getCookieDomain(hostname: string): string | undefined {
-  if (hostname === 'localhost' || hostname.startsWith('localhost:') || hostname === '127.0.0.1') {
-    return undefined;
-  }
-  // www is already redirected to non-www in proxy.ts before updateSession is called,
-  // so this always gets the bare domain (e.g. axis3.com.tr -> .axis3.com.tr)
-  return '.' + hostname;
-}
+import { getSupabaseCookieOptions } from './cookie-options';
 
 export async function updateSession(request: NextRequest, hostname?: string) {
   const resolvedHostname = hostname || request.nextUrl.hostname;
-  const cookieDomain = getCookieDomain(resolvedHostname);
+
+  // Browser/server istemcileriyle aynı domain/secure/path seçenekleri kullanılır;
+  // aksi halde prod'da aynı adlı iki auth çerezi oluşup oturum kaybolabiliyordu.
+  const cookieOptions = getSupabaseCookieOptions({
+    hostname: resolvedHostname,
+    protocol: request.nextUrl.protocol,
+    forwardedProto: request.headers.get('x-forwarded-proto'),
+  });
 
   // Create an unmodified response
   let response = NextResponse.next({
@@ -30,6 +25,7 @@ export async function updateSession(request: NextRequest, hostname?: string) {
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
     {
+      cookieOptions,
       cookies: {
         getAll() {
           return request.cookies.getAll();
@@ -42,10 +38,7 @@ export async function updateSession(request: NextRequest, hostname?: string) {
             request,
           });
           cookiesToSet.forEach(({ name, value, options }) => {
-            response.cookies.set(name, value, {
-              ...options,
-              domain: cookieDomain,
-            });
+            response.cookies.set(name, value, options);
           });
         },
       },
@@ -62,7 +55,7 @@ export async function updateSession(request: NextRequest, hostname?: string) {
         const expiredCookies = request.cookies.getAll()
           .filter(c => c.name.startsWith('sb-') || c.name.startsWith('supabase-'));
         for (const c of expiredCookies) {
-          response.cookies.set(c.name, '', { maxAge: 0, path: '/', domain: cookieDomain });
+          response.cookies.set(c.name, '', { ...cookieOptions, maxAge: 0 });
         }
       }
     } else {

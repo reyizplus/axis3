@@ -1,5 +1,6 @@
 import { createBrowserClient } from '@supabase/ssr';
 import { Database } from '@/types/database';
+import { getSupabaseCookieOptions } from './cookie-options';
 
 const supabaseFetch: typeof fetch = async (input, init) => {
   try {
@@ -14,12 +15,21 @@ const supabaseFetch: typeof fetch = async (input, init) => {
 };
 
 export function createClient() {
+  // Middleware (proxy) ve server istemcisiyle aynı çerez seçenekleri; tarayıcıda
+  // giriş yapıldığında da domain `.axis3.com.tr` olsun ki aynı adlı iki çerez oluşmasın.
+  const cookieOptions = getSupabaseCookieOptions(
+    typeof window !== 'undefined'
+      ? { hostname: window.location.hostname, protocol: window.location.protocol }
+      : {}
+  );
+
   return createBrowserClient<Database>(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
     {
       global: { fetch: supabaseFetch },
       auth: { lockAcquireTimeout: 15000 },
+      cookieOptions,
     } as any
   );
 }

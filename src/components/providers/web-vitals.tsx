@@ -1,6 +1,7 @@
 'use client';
 
 import { useReportWebVitals } from 'next/web-vitals';
+import { getGaMeasurementId } from '@/lib/analytics/ga';
 
 export function WebVitals() {
   useReportWebVitals((metric) => {
@@ -12,7 +13,7 @@ export function WebVitals() {
         delta: metric.delta,
         id: metric.id,
       };
-      const gaId = process.env.NEXT_PUBLIC_GA_MEASUREMENT_ID;
+      const gaId = getGaMeasurementId();
       if (gaId && typeof window !== 'undefined' && 'gtag' in window) {
         window.gtag?.('event', metric.name, {
           value: Math.round(metric.name === 'CLS' ? metric.value * 1000 : metric.value),
