@@ -9,7 +9,7 @@
 import { createClient } from '@/lib/supabase/client';
 import { CorrectionFactor } from './correction-factor';
 import { DeliveryCalculator } from '@/lib/utils/delivery-calculator';
-import { computeQuote, PricingError } from './core';
+import { computeQuote, normalizeVatRate, PricingError } from './core';
 import type { QuantityDiscountTier } from './core';
 import { getCachedAnalysis } from './server/analysis-cache';
 
@@ -23,6 +23,14 @@ export type { PricingInput, PricingResult };
 
 const DEFAULT_WASTE_PERCENTAGE = 10.0;
 const DEFAULT_FILAMENT_BUFFER = 1.05;
+/**
+ * Amortismanı saatlik ücrete çevirirken kullanılan aylık çalışma saati.
+ * Yazıcı 8 saat × 20 iş günü çalışıyor varsayımı; tek yerde tutulur ki
+ * makine maliyeti tahminî de olsa tekrar üretilebilir olsun.
+ */
+const MACHINE_HOURS_PER_MONTH = 160;
+/** Türkiye standart KDV oranı; DB'de kayıt yoksa iki taraf aynı varsayılanı kullanır. */
+const DEFAULT_VAT_RATE = 0.2;
 
 const warnedOnce = new Set<string>();
 
@@ -98,7 +106,7 @@ export class PricingEngine {
 
   async calculatePrice(input: PricingInput): Promise<PricingResult> {
     try {
-      const [material, machine, labor, riskPremium, electricity, serviceFee, profit, coefficients] =
+      const [material, machine, labor, riskPremium, electricity, serviceFee, profit, coefficients, vat] =
         await Promise.all([
           this.getMaterial(input.materialId),
           this.getMachineRate(input.machineType),
@@ -108,6 +116,7 @@ export class PricingEngine {
           this.getServiceFee(),
           this.getProfitMarginMultiplier(),
           this.correctionFactor.getCoefficients(),
+          this.getVatRate(),
         ]);
 
       if (!material) {
@@ -126,6 +135,12 @@ export class PricingEngine {
           `${input.machineType} için makine saatlik ücreti tanımlı değil; varsayılan ${machine.hourlyRate} TL/saat kullanılıyor.`
         );
       }
+      if (machine.derived) {
+        warnOnce(
+          `machine-derived-${input.machineType}`,
+          `${input.machineType} saatlik ücreti 0 olduğu için amortismandan türetildi (${machine.hourlyRate.toFixed(2)} TL/saat). Admin > makine amortismanı ayarını kontrol edin.`
+        );
+      }
       if (machine.hourlyRate === 0) {
         warnOnce(
           `machine-zero-${input.machineType}`,
@@ -136,6 +151,12 @@ export class PricingEngine {
         warnOnce(
           'profit-margin-missing',
           'Kâr marjı çarpanı tanımlı değil; 1.00 (kâr eklenmiyor) kullanılıyor.'
+        );
+      }
+      if (!vat.configured) {
+        warnOnce(
+          'vat-rate-missing',
+          `KDV oranı tanımlı değil; %${Math.round(DEFAULT_VAT_RATE * 100)} varsayıldı.`
         );
       }
 
@@ -180,9 +201,10 @@ export class PricingEngine {
           laborHourlyRate: labor.hourlyRate,
           riskPercentage: riskPremium.premiumPercentage,
           serviceFee: serviceFee.fee,
-          profitMultiplier: profit.multiplier,
+          profitMultiplier: profit.enabled ? profit.multiplier : 1,
         },
         quantityDiscountTiers: discountTiers,
+        vatRate: vat.rate,
       });
 
       const deliveryDays = await this.deliveryCalculator.calculateSingleItemDelivery(
@@ -329,19 +351,36 @@ export class PricingEngine {
   private async getMachineRate(machineType: string): Promise<{
     hourlyRate: number;
     configured: boolean;
+    derived: boolean;
   }> {
     const { data } = await (this.supabase as any)
       .from('machine_amortization')
-      .select('hourly_rate')
+      .select('hourly_rate, purchase_cost, depreciation_months, monthly_maintenance')
       .eq('machine_type', machineType)
       .eq('is_active', true)
       .maybeSingle();
 
     if (data) {
-      return {
-        hourlyRate: Math.max(0, asNumber((data as any).hourly_rate, 0)),
-        configured: true,
-      };
+      const hourlyRate = Math.max(0, asNumber((data as any).hourly_rate, 0));
+      if (hourlyRate > 0) {
+        return { hourlyRate, configured: true, derived: false };
+      }
+
+      // Saatlik ücret 0 bırakılmış ama amortisman verisi doluysa fiyat sessizce
+      // makine maliyetsiz hesaplanıyordu (4 makinenin de hourly_rate değeri 0).
+      // Burada amortismandan türetiyoruz; varsayılan "5 TL/saat" uydurmaktansa
+      // DB'deki gerçek satın alma bedelini kullanmak doğru.
+      const purchaseCost = Math.max(0, asNumber((data as any).purchase_cost, 0));
+      const depreciationMonths = Math.max(0, asNumber((data as any).depreciation_months, 0));
+      const monthlyMaintenance = Math.max(0, asNumber((data as any).monthly_maintenance, 0));
+
+      if (depreciationMonths > 0 && purchaseCost > 0) {
+        const monthlyCost = purchaseCost / depreciationMonths + monthlyMaintenance;
+        const derivedRate = monthlyCost / MACHINE_HOURS_PER_MONTH;
+        if (derivedRate > 0) {
+          return { hourlyRate: derivedRate, configured: true, derived: true };
+        }
+      }
     }
 
     const defaultRates: Record<string, number> = {
@@ -354,7 +393,34 @@ export class PricingEngine {
     return {
       hourlyRate: defaultRates[machineType] ?? 5,
       configured: false,
+      derived: false,
     };
+  }
+
+  /**
+   * `global_settings.vat_rate` değerini 0..1 orana çevirir.
+   *
+   * Dönüşüm `normalizeVatRate` içinde tek yerde tutulur; sepet, sipariş
+   * servisi ve motor aynı fonksiyonu kullanır ki 0.2 ile 20 aynı sonucu versin.
+   */
+  private async getVatRate(): Promise<{ rate: number; configured: boolean }> {
+    try {
+      const { data } = await (this.supabase.from('global_settings') as any)
+        .select('value')
+        .eq('key', 'vat_rate')
+        .maybeSingle();
+
+      if (!data) return { rate: DEFAULT_VAT_RATE, configured: false };
+
+      const value = asNumber((data as any).value?.value, DEFAULT_VAT_RATE * 100);
+
+      return {
+        rate: normalizeVatRate(value),
+        configured: true,
+      };
+    } catch {
+      return { rate: DEFAULT_VAT_RATE, configured: false };
+    }
   }
 
   private async getLaborSettings(technology: string): Promise<{
@@ -553,7 +619,6 @@ export class PricingEngine {
         correctionBreakdown: { warmUpMinutes: 0, calibrationMinutes: 0, bedPrepMinutes: 0, deadTimePerPartMinutes: 0 },
       },
       deliveryDays: 0,
-      estimationSource: 'volume',
       warnings: [error],
       error,
     };
