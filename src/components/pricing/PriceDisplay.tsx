@@ -138,22 +138,52 @@ export function PriceDisplay({
   }
 
   if (!pricing || !pricing.success) {
+    const failed = !!pricing && !pricing.success;
+
     return (
       <Card className="glass-light dark:glass">
         <CardHeader>
-          <CardTitle>Fiyat Hesaplaması</CardTitle>
+          <CardTitle>Fiyat Teklifi</CardTitle>
           <CardDescription>
-            Malzeme ve kalite seçimi yapın
+            {slicing
+              ? 'Model gerçek dilimleniyor'
+              : failed
+                ? 'Fiyat hesaplanamadı'
+                : 'Malzeme ve kalite seçimi yapın'}
           </CardDescription>
         </CardHeader>
         <CardContent>
           <div className="flex flex-col items-center justify-center py-8 text-center">
             <div className="rounded-full bg-muted/50 p-4 mb-4">
-              <TrendingUp className="h-8 w-8 text-muted-foreground" />
+              {slicing ? (
+                <Loader2 className="h-8 w-8 animate-spin text-primary" />
+              ) : failed ? (
+                <TriangleAlert className="h-8 w-8 text-amber-500" />
+              ) : (
+                <TrendingUp className="h-8 w-8 text-muted-foreground" />
+              )}
             </div>
             <p className="text-sm text-muted-foreground">
-              Fiyat hesaplamak için tüm seçimleri tamamlayın
+              {slicing
+                ? 'Fiyat, model gerçekten dilimlenerek hesaplanıyor. Bu birkaç saniye sürebilir.'
+                : failed
+                  ? pricing.error ?? 'Fiyat hesaplanamadı'
+                  : 'Fiyat hesaplamak için tüm seçimleri tamamlayın'}
             </p>
+            {slicing && (
+              <p className="mt-1.5 text-xs text-muted-foreground">
+                Hacim tahmininden fiyat verilmiyor.
+              </p>
+            )}
+            {failed && onRetry && (
+              <button
+                type="button"
+                onClick={onRetry}
+                className="mt-4 rounded-lg border border-border px-3 py-1.5 text-xs font-medium transition-colors hover:bg-muted"
+              >
+                Tekrar dene
+              </button>
+            )}
           </div>
         </CardContent>
       </Card>
@@ -192,8 +222,21 @@ export function PriceDisplay({
             ₺{displayPrice.toFixed(2)}
           </div>
           <div className="text-xs text-muted-foreground mt-1.5">
-            {quantity > 1 ? `₺${(displayPrice / quantity).toFixed(2)} / adet` : 'Toplam fiyat'}
+            {quantity > 1
+              ? `₺${(displayPrice / quantity).toFixed(2)} / adet · KDV hariç`
+              : 'Toplam fiyat · KDV hariç'}
           </div>
+          {pricing.breakdown.vatRate > 0 ? (
+            <div className="mt-1 text-xs text-muted-foreground">
+              + KDV (%{Math.round(pricing.breakdown.vatRate * 100)}): ₺
+              {pricing.breakdown.vatAmount.toFixed(2)} · KDV dahil ₺
+              {pricing.breakdown.totalWithVat.toFixed(2)}
+            </div>
+          ) : (
+            <div className="mt-1 text-xs text-muted-foreground">
+              KDV hesaplanacak
+            </div>
+          )}
           {isPreorder ? (() => {
             const da = pricing.breakdown.preorderDiscount;
             return da != null && da > 0 ? (
@@ -256,7 +299,7 @@ export function PriceDisplay({
               <span className="flex-1">
                 {slicing
                   ? 'Fiyat gerçek dilimlemeyle doğrulanıyor, sipariş birkaç saniye içinde açılacak.'
-                  : 'Bu fiyat tahminidir; sipariş verebilmek için fiyatın doğrulanması gerekiyor.'}
+                  : 'Fiyat doğrulanamadı; sipariş verebilmek için gerçek dilimleme sonucu gerekiyor.'}
               </span>
               {!slicing && onRetry && (
                 <button

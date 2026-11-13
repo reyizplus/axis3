@@ -397,20 +397,26 @@ export default function UploadDetailPage() {
           infillPercentage,
         };
 
-        // 1) Hızlı önizleme: hash yok → motor hacim tahminine düşer.
-        const preview = await pricingEngine.calculatePrice(baseInput);
-        if (cancelled) return;
-        setPricingResult(preview);
-        setPriceSource('volume');
-        setIsCalculating(false);
-
-        // Reçine bilinçli olarak hacim tahmininde kalır (K3).
+        // Reçine bilinçli olarak hacim tahmininde kalır (K3): SLA dilimleyici
+        // yok. Arayüz bu fiyatı "Tahmini" olarak etiketler.
         if (isSla) {
+          const preview = await pricingEngine.calculatePrice(baseInput);
+          if (cancelled) return;
+          setPricingResult(preview);
+          setPriceSource(preview.success ? 'volume' : null);
+          setIsCalculating(false);
           setIsSlicing(false);
           return;
         }
 
-        // 2) Gerçek dilimleme. İstemci yalnızca ID'leri ve özel mod
+        // FDM'de hacim tahmininden fiyat ÜRETİLMEZ. Dilimleme bitene kadar
+        // fiyat gösterilmez: önce bir sayı gösterip sonra değiştirmek
+        // müşteriye sessiz sapma olarak yansıyordu.
+        setPricingResult(null);
+        setPriceSource(null);
+        setIsCalculating(false);
+
+        // Gerçek dilimleme. İstemci yalnızca ID'leri ve özel mod
         // değerlerini gönderir; sayısal ayarları sunucu DB'den çözer.
         const response = await fetch('/api/pricing/slice', {
           method: 'POST',
@@ -440,12 +446,12 @@ export default function UploadDetailPage() {
         }
 
         if (!response.ok || !payload?.success) {
-          // Uydurma sayı yok: tahmini fiyat "Tahmini" etiketiyle kalır ve
-          // sipariş politikası gerekiyorsa buton kilitli olur.
+          // Uydurma sayı yok: fiyat gösterilmez, sipariş butonu kilitli kalır.
           setIsSlicing(false);
-          setPriceSource('volume');
+          setPricingResult(null);
+          setPriceSource(null);
           toast.error(payload?.error ?? 'Dilimleme yapılamadı', {
-            description: 'Fiyat tahmini olarak gösteriliyor.',
+            description: 'Fiyat, dilimleme tamamlanmadan gösterilmiyor.',
           });
           return;
         }
@@ -458,9 +464,9 @@ export default function UploadDetailPage() {
           if (cancelled) return;
 
           setPricingResult(verified);
-          // Dilimleme başarılı ama motor hash'li satırı okuyamadıysa fiyat
-          // hâlâ tahmindir; "gerçek" diye etiketlemek sessiz sapma olur.
-          setPriceSource(verified.estimationSource === 'gcode' ? 'slicing' : 'volume');
+          // Motor hash'li satırı okuyamadıysa fiyat üretmez; bu durumda
+          // "gerçek dilimleme" etiketi basmak sessiz sapma olurdu.
+          setPriceSource(verified.estimationSource === 'gcode' ? 'slicing' : null);
           setIsSlicing(false);
 
           if (verified.success) {
@@ -473,12 +479,15 @@ export default function UploadDetailPage() {
           return;
         }
 
-        // SLA veya dilimleme atlandı → hacim tahmini geçerli.
+        // FDM'de rota yalnızca 'slicing' veya hata döner; başka bir kaynak
+        // gelirse fiyat uydurmak yerine boş bırakılır.
         setIsSlicing(false);
-        setPriceSource('volume');
+        setPriceSource(null);
       } catch (err) {
         if (cancelled || (err instanceof Error && err.name === 'AbortError')) return;
         toast.error('Fiyat hesaplanamadı');
+        setPricingResult(null);
+        setPriceSource(null);
         setIsCalculating(false);
         setIsSlicing(false);
       } finally {
