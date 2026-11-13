@@ -79,6 +79,7 @@ services:
       - ./next.config.ts:/app/next.config.ts
       - ./tailwind.config.ts:/app/tailwind.config.ts
       - ./tsconfig.json:/app/tsconfig.json
+      - ./vitest.config.ts:/app/vitest.config.ts
 
       # Log kaliciligi: container yeniden baslasa da loglar korunur
       - ./logs:/app/logs

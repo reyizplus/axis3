@@ -26,6 +26,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:iyzico": "node --env-file=.env.local scripts/iyzico-smoke.mjs",
+    "check:stock": "node --env-file=.env.local scripts/supabase-stock-check.mjs",
     "docker:dev": "docker-compose up app postgres redis",
     "docker:dev:build": "docker-compose build app && docker-compose up app postgres redis",
     "docker:prod": "docker-compose --profile production up app-prod postgres redis",
