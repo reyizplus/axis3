@@ -45,6 +45,26 @@ services:
     networks:
       - axis3-network
 
+  # PrusaSlicer Sidecar (gercek G-Code uretimi)
+  # Yalnizca ic agda erisilir; host portu bilincli olarak acilmaz.
+  slicer:
+    build: ./slicer
+    container_name: axis3-slicer
+    restart: unless-stopped
+    expose:
+      - "8000"
+    environment:
+      SLICER_TOKEN: ${SLICER_TOKEN:-dev-token}
+    cpus: "2.0"
+    mem_limit: 2g
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    networks:
+      - axis3-network
+
   # Next.js Application (Development)
   app:
     build:
@@ -67,6 +87,14 @@ services:
       # Redis (Local)
       REDIS_URL: redis://redis:6379
 
+      # PrusaSlicer sidecar (gercek dilimleme). Host portu yok; yalnizca ic ag.
+      SLICER_URL: http://slicer:8000
+      SLICER_TOKEN: ${SLICER_TOKEN:-dev-token}
+      # Kill switch: yeni dilimleme cagrilari kapaliysa hacim tahminine duser.
+      SLICING_ENABLED: ${SLICING_ENABLED:-true}
+      # Siparis fiyati dilimleme ile dogrulanmadan siparis olusturulmaz (K1).
+      PRICING_REQUIRE_SLICING: ${PRICING_REQUIRE_SLICING:-true}
+
       # Windows/WSL bind-mount'larda dosya degisiklikleri inotify ile
       # algilanmadigi icin webpack/watchpack polling ile izler.
       WATCHPACK_POLLING: "true"
@@ -80,6 +108,7 @@ services:
       - ./tailwind.config.ts:/app/tailwind.config.ts
       - ./tsconfig.json:/app/tsconfig.json
       - ./vitest.config.ts:/app/vitest.config.ts
+      - ./scripts:/app/scripts
 
       # Log kaliciligi: container yeniden baslasa da loglar korunur
       - ./logs:/app/logs
