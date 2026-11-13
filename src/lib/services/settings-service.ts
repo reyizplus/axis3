@@ -1,4 +1,5 @@
 import { createClient } from '@/lib/supabase/client';
+import { normalizeVatRate } from '@/lib/pricing/core';
 
 let cachedVatRate: number | null = null;
 
@@ -12,7 +13,8 @@ export async function getVatRate(): Promise<number> {
       .single();
     if (error || !data) return 0.20;
     const v = (data as any).value as { value?: number } | null;
-    cachedVatRate = v?.value ?? 0.20;
+    // 0.2 ile 20 aynı sonucu verir; dönüşüm tek yerde (normalizeVatRate).
+    cachedVatRate = normalizeVatRate(v?.value ?? 20);
     return cachedVatRate;
   } catch {
     return 0.20;

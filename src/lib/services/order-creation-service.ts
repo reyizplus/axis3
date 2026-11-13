@@ -15,6 +15,7 @@
 import { randomBytes, randomUUID } from 'crypto';
 import { createClient, createServiceClient } from '@/lib/supabase/server';
 import { PricingEngine, isSlicingEnabled } from '@/lib/pricing';
+import { normalizeVatRate } from '@/lib/pricing/core';
 import type { PriceBreakdown as EngineBreakdown } from '@/lib/pricing/types';
 import { calculateOrderTotals, hasPriceDrift } from '@/lib/services/order-totals';
 import { isMissingFunctionError } from '@/lib/supabase/errors';
@@ -238,7 +239,9 @@ async function loadSettings(supabase: ReturnType<typeof createServiceClient>) {
     map[row.key] = row.value;
   }
 
-  const vatRate = typeof map.vat_rate?.value === 'number' ? map.vat_rate.value : 0.2;
+  const vatRate = typeof map.vat_rate?.value === 'number'
+    ? normalizeVatRate(map.vat_rate.value)
+    : 0.2;
   const shippingFee = Number(map.shipping_settings?.shippingFee ?? 0);
   const freeShippingMinAmount = Number(map.shipping_settings?.freeShippingMinAmount ?? 0);
   const minOrderAmount = Number(map.min_order_amount?.value ?? 0);
@@ -566,7 +569,11 @@ export async function createOrder(input: CreateOrderInput): Promise<CreatedOrder
     const requireSlicing =
       isSlicingEnabled() && process.env.PRICING_REQUIRE_SLICING !== 'false';
 
-    if (slicerProfileHash && sliceSelection.profile && requireSlicing) {
+    // FDM'de fiyatın tek kaynağı gerçek dilimlemedir, bu yüzden profil varsa
+    // dilimleme her zaman yapılır. `requireSlicing=false` artık "tahmini fiyata
+    // izin ver" anlamına gelmiyor (hacim fiyatı kaldırıldı); yalnızca aşağıdaki
+    // sonuç doğrulamasını etkiler.
+    if (slicerProfileHash && sliceSelection.profile) {
       await ensureSlicedAnalysis(supabase, {
         fileId: file.id,
         storagePath: (file as any).storage_path ?? null,
