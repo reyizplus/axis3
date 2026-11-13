@@ -85,6 +85,13 @@ export default function UploadDetailPage() {
 
   const [pricingResult, setPricingResult] = useState<PricingResult | null>(null);
   const [isCalculating, setIsCalculating] = useState(false);
+  /** Fiyatın kaynağı: gerçek dilimleme mi, hacim tahmini mi (Görev 9). */
+  const [priceSource, setPriceSource] = useState<'slicing' | 'volume' | null>(null);
+  const [isSlicing, setIsSlicing] = useState(false);
+  /** Sunucudan gelen sipariş politikası (K1); varsayılan güvenli taraf: zorunlu. */
+  const [requireSlicing, setRequireSlicing] = useState(true);
+  /** Dilimleme hatasından sonra "Tekrar dene" için sayacı artırır. */
+  const [retryToken, setRetryToken] = useState(0);
 
   const [advancedMode, setAdvancedMode] = useState(false);
   const [customLayerHeight, setCustomLayerHeight] = useState(0.2);
@@ -105,6 +112,18 @@ export default function UploadDetailPage() {
     }
     if (!advancedMode && !selectedQuality) {
       toast.error('Lütfen baskı kalitesi seçin'); return;
+    }
+    // K1: fiyat gerçek dilimlemeyle doğrulanmadan sipariş kabul edilmez.
+    // Reçine bilinçli olarak istisna (K3).
+    if (
+      requireSlicing &&
+      selectedMaterial.technology !== 'SLA' &&
+      priceSource !== 'slicing'
+    ) {
+      toast.error('Fiyat henüz doğrulanmadı', {
+        description: 'Gerçek dilimleme tamamlandığında tekrar deneyin.',
+      });
+      return;
     }
 
     setCheckingInventory(true);
@@ -290,14 +309,29 @@ export default function UploadDetailPage() {
   useEffect(() => { if (advancedMode) setSelectedQuality(null); }, [advancedMode]);
 
   // Price calculation
+  //
+  // Akış bilinçli olarak iki aşamalı:
+  //   1. Hacim tahmini ile anında fiyat gösterilir → etiket "Tahmini".
+  //   2. `/api/pricing/slice` gerçek dilimlemeyi tetikler. Sonuç gelince fiyat
+  //      AYNI profil hash'i ile yeniden hesaplanır → etiket "Gerçek dilimleme".
+  //
+  // Seçim değiştiği anda eski kesin fiyat gizlenir: bayat fiyat göstermek
+  // müşteriye yanlış tutar gösterip sipariş anında farklı tutar çekmek demek.
   useEffect(() => {
-    (async () => {
+    let cancelled = false;
+    const controller = new AbortController();
+
+    const run = async () => {
       if (!fileData || !selectedMaterial) return;
       if (!advancedMode && !selectedQuality) return;
       const isSla = selectedMaterial.technology === 'SLA';
       if (advancedMode && (isSla ? !customLayerThickness : !customLayerHeight)) return;
+
       setIsCalculating(true);
       setPricingResult(null);
+      setPriceSource(null);
+      setIsSlicing(!isSla);
+
       try {
         // Availability must be colour- and quantity-aware: the same rule the
         // server applies when it creates the order.
@@ -316,6 +350,8 @@ export default function UploadDetailPage() {
               selectedMaterial.technology
             )
           : materialAvail;
+
+        if (cancelled) return;
 
         const hasEnoughStock = availability.stockCount >= quantity;
         setInventoryCheck({
@@ -345,7 +381,7 @@ export default function UploadDetailPage() {
             ? customInfill
             : selectedQuality?.infillPercentage ?? 20;
 
-        const priceInput: PricingInput = {
+        const baseInput: PricingInput = {
           fileId: fileData.id,
           volumeCm3: fileData.volume_cm3,
           materialId: selectedMaterial.id,
@@ -361,16 +397,105 @@ export default function UploadDetailPage() {
           infillPercentage,
         };
 
-        const result: PricingResult = await pricingEngine.calculatePrice(priceInput);
-        setPricingResult(result);
-        if (result.success) {
-          await pricingEngine.savePricingHistory(fileId, priceInput, result);
+        // 1) Hızlı önizleme: hash yok → motor hacim tahminine düşer.
+        const preview = await pricingEngine.calculatePrice(baseInput);
+        if (cancelled) return;
+        setPricingResult(preview);
+        setPriceSource('volume');
+        setIsCalculating(false);
+
+        // Reçine bilinçli olarak hacim tahmininde kalır (K3).
+        if (isSla) {
+          setIsSlicing(false);
+          return;
         }
-      } catch { toast.error('Fiyat hesaplanamadı'); }
-      finally { setIsCalculating(false); }
-    })();
+
+        // 2) Gerçek dilimleme. İstemci yalnızca ID'leri ve özel mod
+        // değerlerini gönderir; sayısal ayarları sunucu DB'den çözer.
+        const response = await fetch('/api/pricing/slice', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          signal: controller.signal,
+          body: JSON.stringify({
+            fileId: fileData.id,
+            materialId: selectedMaterial.id,
+            printSettingId: advancedMode ? 'custom' : selectedQuality?.id,
+            nozzleSizeMm: selectedNozzle?.size_mm ?? null,
+            custom: advancedMode
+              ? {
+                  layerHeight: customLayerHeight,
+                  infillPercentage: customInfill,
+                  speedMultiplier: customSpeed,
+                  supportEnabled: true,
+                }
+              : null,
+          }),
+        });
+
+        const payload = await response.json().catch(() => null);
+        if (cancelled) return;
+
+        if (typeof payload?.requireSlicing === 'boolean') {
+          setRequireSlicing(payload.requireSlicing);
+        }
+
+        if (!response.ok || !payload?.success) {
+          // Uydurma sayı yok: tahmini fiyat "Tahmini" etiketiyle kalır ve
+          // sipariş politikası gerekiyorsa buton kilitli olur.
+          setIsSlicing(false);
+          setPriceSource('volume');
+          toast.error(payload?.error ?? 'Dilimleme yapılamadı', {
+            description: 'Fiyat tahmini olarak gösteriliyor.',
+          });
+          return;
+        }
+
+        if (payload.source === 'slicing' && typeof payload.profileHash === 'string') {
+          const verified = await pricingEngine.calculatePrice({
+            ...baseInput,
+            slicerProfileHash: payload.profileHash,
+          });
+          if (cancelled) return;
+
+          setPricingResult(verified);
+          // Dilimleme başarılı ama motor hash'li satırı okuyamadıysa fiyat
+          // hâlâ tahmindir; "gerçek" diye etiketlemek sessiz sapma olur.
+          setPriceSource(verified.estimationSource === 'gcode' ? 'slicing' : 'volume');
+          setIsSlicing(false);
+
+          if (verified.success) {
+            await pricingEngine.savePricingHistory(
+              fileId,
+              { ...baseInput, slicerProfileHash: payload.profileHash },
+              verified
+            );
+          }
+          return;
+        }
+
+        // SLA veya dilimleme atlandı → hacim tahmini geçerli.
+        setIsSlicing(false);
+        setPriceSource('volume');
+      } catch (err) {
+        if (cancelled || (err instanceof Error && err.name === 'AbortError')) return;
+        toast.error('Fiyat hesaplanamadı');
+        setIsCalculating(false);
+        setIsSlicing(false);
+      } finally {
+        if (!cancelled) setIsCalculating(false);
+      }
+    };
+
+    // 400 ms debounce: slider sürüklerken her karede dilimleme isteği atılmaz.
+    const timer = setTimeout(run, 400);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+      controller.abort();
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fileData?.id, selectedMaterial?.id, selectedColor, selectedNozzle?.id, selectedQuality?.id, quantity, advancedMode, customLayerHeight, customInfill, customSpeed, customLayerThickness, customExposureTime, fileId]);
+  }, [fileData?.id, selectedMaterial?.id, selectedColor, selectedNozzle?.id, selectedQuality?.id, quantity, advancedMode, customLayerHeight, customInfill, customSpeed, customLayerThickness, customExposureTime, fileId, retryToken]);
 
   if (loading) {
     return (
@@ -671,6 +796,14 @@ export default function UploadDetailPage() {
                 quantity={quantity}
                 onQuantityChange={setQuantity}
                 minQuantity={1}
+                priceSource={priceSource}
+                slicing={isSlicing}
+                locked={
+                  requireSlicing &&
+                  selectedMaterial?.technology !== 'SLA' &&
+                  priceSource !== 'slicing'
+                }
+                onRetry={() => setRetryToken((value) => value + 1)}
               />
             </div>
           </motion.div>

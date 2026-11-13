@@ -23,6 +23,9 @@ import {
   Info,
   Plus,
   Minus,
+  Calculator,
+  TriangleAlert,
+  Loader2,
 } from 'lucide-react';
 import { motion } from 'framer-motion';
 import type { PricingResult } from '@/lib/pricing';
@@ -42,6 +45,22 @@ interface PriceDisplayProps {
   quantity?: number;
   onQuantityChange?: (qty: number) => void;
   minQuantity?: number;
+  /**
+   * Fiyatın kaynağı: 'slicing' = gerçek dilimleme, 'volume' = hacim tahmini.
+   * null ise henüz bilinmiyor (dilimleme sürüyor).
+   */
+  priceSource?: 'slicing' | 'volume' | null;
+  /** Dilimleme isteği sürüyor mu. */
+  slicing?: boolean;
+  /**
+   * K1: sunucu dilimleme zorunlu tutuyorsa ve elimizde gerçek dilimleme
+   * sonucu yoksa sipariş verilemez. Fiyat gösterilir ama "tahmini" olarak
+   * etiketlenir; buton kilitlenir.
+   */
+  locked?: boolean;
+  lockedMessage?: string;
+  /** Kilitliyken fiyatı yeniden doğrulamayı dener (dilimleme hatası sonrası). */
+  onRetry?: () => void;
 }
 
 // =====================================================
@@ -59,6 +78,11 @@ export function PriceDisplay({
   quantity = 1,
   onQuantityChange,
   minQuantity = 1,
+  priceSource = null,
+  slicing = false,
+  locked = false,
+  lockedMessage = 'Fiyat doğrulanamadı',
+  onRetry,
 }: PriceDisplayProps) {
   const [displayPrice, setDisplayPrice] = useState(0);
 
@@ -140,10 +164,13 @@ export function PriceDisplay({
     <Card className="sticky top-24 overflow-hidden border-primary/20 shadow-lg shadow-primary/5">
       <div className="absolute inset-0 bg-gradient-to-br from-primary/5 via-transparent to-primary/[0.02] pointer-events-none" />
       <CardHeader className="pb-2 relative">
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between gap-2">
           <div className="flex items-center gap-2">
             <div className="h-8 w-1 rounded-full bg-primary" />
-            <CardTitle className="text-lg">Fiyat Teklifi</CardTitle>
+            <div className="space-y-1">
+              <CardTitle className="text-lg">Fiyat Teklifi</CardTitle>
+              <PriceSourceBadge source={priceSource} slicing={slicing} />
+            </div>
           </div>
           {pricing.breakdown.quantityDiscount != null && pricing.breakdown.quantityDiscount > 0 && (
             <Badge className="bg-green-500/10 text-green-600 border-green-500/20 text-[10px] px-2">
@@ -213,6 +240,37 @@ export function PriceDisplay({
           </motion.div>
         )}
 
+        {/* Fiyat doğrulanmadıysa sipariş kilitli (K1) */}
+        {locked && (
+          <motion.div
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: 'auto' }}
+            className="rounded-xl border border-amber-200 dark:border-amber-800 bg-amber-50/50 dark:bg-amber-950/20 p-3"
+          >
+            <div className="flex items-start gap-2 text-xs text-amber-700 dark:text-amber-400">
+              {slicing ? (
+                <Loader2 className="h-3.5 w-3.5 mt-0.5 flex-shrink-0 animate-spin" />
+              ) : (
+                <TriangleAlert className="h-3.5 w-3.5 mt-0.5 flex-shrink-0" />
+              )}
+              <span className="flex-1">
+                {slicing
+                  ? 'Fiyat gerçek dilimlemeyle doğrulanıyor, sipariş birkaç saniye içinde açılacak.'
+                  : 'Bu fiyat tahminidir; sipariş verebilmek için fiyatın doğrulanması gerekiyor.'}
+              </span>
+              {!slicing && onRetry && (
+                <button
+                  type="button"
+                  onClick={onRetry}
+                  className="shrink-0 rounded-md border border-amber-300/60 px-2 py-0.5 font-medium text-amber-700 transition-colors hover:bg-amber-100/60 dark:border-amber-700/60 dark:text-amber-300 dark:hover:bg-amber-900/40"
+                >
+                  Tekrar dene
+                </button>
+              )}
+            </div>
+          </motion.div>
+        )}
+
         {/* Quantity + Add to Cart */}
         <motion.div
           initial={{ opacity: 0, y: 10 }}
@@ -244,10 +302,20 @@ export function PriceDisplay({
             className="flex-1 h-12 text-base font-semibold shadow-lg shadow-primary/25"
             size="lg"
             onClick={onAddToCart}
-            disabled={disabled || unavailable}
+            disabled={disabled || unavailable || locked}
           >
-            <ShoppingCart className="mr-2 h-5 w-5" />
-            {unavailable ? 'Stokta Yok' : 'Sepete Ekle'}
+            {slicing ? (
+              <Loader2 className="mr-2 h-5 w-5 animate-spin" />
+            ) : (
+              <ShoppingCart className="mr-2 h-5 w-5" />
+            )}
+            {unavailable
+              ? 'Stokta Yok'
+              : locked
+                ? slicing
+                  ? 'Dilimleniyor…'
+                  : lockedMessage
+                : 'Sepete Ekle'}
           </Button>
         </motion.div>
 
@@ -311,5 +379,51 @@ export function PriceDisplay({
         </div>
       </CardContent>
     </Card>
+  );
+}
+
+/**
+ * Fiyatın nereden geldiğini gösterir. Kullanıcı "tahmini" ile "gerçek
+ * dilimleme"yi ayırt edemezse fiyat farkını sürpriz olarak yaşar.
+ */
+function PriceSourceBadge({
+  source,
+  slicing,
+}: {
+  source: 'slicing' | 'volume' | null;
+  slicing: boolean;
+}) {
+  if (slicing || source === null) {
+    return (
+      <span
+        className="inline-flex items-center gap-1 rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground"
+        title="Dilimleme sonucu bekleniyor"
+      >
+        <Loader2 className="h-3 w-3 animate-spin" />
+        Hesaplanıyor
+      </span>
+    );
+  }
+
+  if (source === 'slicing') {
+    return (
+      <span
+        className="inline-flex items-center gap-1 rounded-full bg-green-500/10 px-2 py-0.5 text-[10px] font-medium text-green-600 dark:text-green-400"
+        title="Fiyat, modelin gerçek dilimlenmesinden gelen gram ve süre ile hesaplandı"
+      >
+        <Calculator className="h-3 w-3" />
+        Gerçek dilimleme
+      </span>
+    );
+  }
+
+  return (
+    <span
+      className="inline-flex items-center gap-1 rounded-full bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium text-amber-600 dark:text-amber-400"
+      title="Fiyat hacim tahminine dayanır; kesin tutar sipariş anında doğrulanır"
+    >
+      <TriangleAlert className="h-3 w-3" />
+      Tahmini
+    </span>
   );
 }
