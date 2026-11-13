@@ -11,9 +11,19 @@
  *   fee are charged ONCE per order — never once per part.
  * - Supports are counted once. For G-Code input the total filament weight
  *   already includes supports, so the support weight is only a breakdown.
- * - Print time is derived from the *extruded* volume (shell + infill), not the
- *   bounding volume. A 20% infill part must not be priced like a solid one.
+ * - **FDM is priced only from a real G-Code analysis.** Volume estimation was
+ *   removed as a price source because it drifted up to +40 % on simple models
+ *   (the 20 mm cube: 6.23 g estimated vs 4.41 g sliced). With no G-Code there
+ *   is no FDM price at all — see `PricingError` below — so a customer can never
+ *   be shown a number the machine time does not support.
+ * - SLA keeps the volume estimate on purpose (there is no SLA slicer yet) and
+ *   the UI labels it "Tahmini".
+ * - The filament buffer is a safety margin for *estimates* only; a measured
+ *   G-Code weight is used as-is. The material waste percentage still applies
+ *   because it covers real losses (failed prints, spool changes), not guesswork.
  * - Discounts can never take the order below its direct cost (break-even).
+ * - VAT is computed here so the UI can show the tax-exclusive price with the
+ *   tax amount next to it; the order total is still built by `order-totals`.
  * - Every component is rounded to kuruş and the total is the sum of the
  *   rounded components, so the breakdown always adds up exactly.
  */
@@ -92,6 +102,8 @@ export interface QuoteInput {
   estimation: EstimationConfig;
   rates: PricingRates;
   quantityDiscountTiers: QuantityDiscountTier[];
+  /** 0..1, e.g. 0.20 for %20 VAT. */
+  vatRate: number;
 }
 
 export interface ConsumptionEstimate {
@@ -131,6 +143,21 @@ function clamp(value: number, min: number, max: number): number {
 
 function finite(value: number, fallback: number): number {
   return Number.isFinite(value) ? value : fallback;
+}
+
+/**
+ * KDV oranını 0..1 aralığına çevirir.
+ *
+ * `global_settings.vat_rate` yüzde olarak `0.2` tutuyor (admin ekranı
+ * `value × 100` gösteriyor). Birisi `20` yazarsa sepet ve sipariş servisi
+ * tutarı 20 katına çıkarıyordu; motor ise 20'yi yüzde kabul edip düzeltiyordu,
+ * yani iki taraf ayrışıyordu. Tek dönüşüm noktası burasıdır.
+ */
+export function normalizeVatRate(value: unknown): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return 0;
+  const rate = parsed > 1 ? parsed / 100 : parsed;
+  return clamp(rate, 0, 1);
 }
 
 /**
@@ -254,6 +281,17 @@ export function computeQuote(input: QuoteInput): QuoteResult {
     throw new PricingError('Malzeme birim fiyatı tanımlı değil');
   }
 
+  // FDM fiyatı yalnızca gerçek dilimlemeden üretilir. Hacim tahminine düşmek
+  // sessiz bir fiyat sapması demekti: 20 mm küpte tahmin 6.23 g, gerçek
+  // dilimleme 4.41 g (%41 fark). Fiyat yoksa uydurma sayı da yok.
+  if (input.technology === 'FDM' && !input.gcode) {
+    throw new PricingError(
+      'FDM fiyatı gerçek dilimleme sonucu olmadan hesaplanamaz'
+    );
+  }
+
+  const vatRate = normalizeVatRate(input.vatRate);
+
   const wastePercentage = clamp(finite(input.wastePercentage, 0), 0, 100);
   const warnings: string[] = [];
 
@@ -269,7 +307,12 @@ export function computeQuote(input: QuoteInput): QuoteResult {
         estimation: input.estimation,
       });
 
-  const estimate = applyBuffer(rawEstimate, input.estimation.filamentBufferMultiplier);
+  // Buffer yalnızca tahmin içindir. Ölçülmüş bir G-Code gramına da %5 eklemek
+  // "gerçek dilimleme" etiketini yalancı yapar ve fiyatı yukarı sapıtır.
+  const estimate =
+    rawEstimate.source === 'gcode'
+      ? rawEstimate
+      : applyBuffer(rawEstimate, input.estimation.filamentBufferMultiplier);
 
   // ---------- Material (whole line) ----------
   const wasteMultiplier = 1 + wastePercentage / 100;
@@ -376,6 +419,13 @@ export function computeQuote(input: QuoteInput): QuoteResult {
 
   const pricePerUnit = roundMoney(net / quantity);
 
+  // KDV, sipariş toplamında (order-totals) yeniden hesaplanır; burada yalnızca
+  // müşteriye "KDV hariç" fiyatın yanında gerçek vergi tutarını gösterebilmek
+  // için hesaplanıyor. `totalPrice` bilinçli olarak KDV hariç kalır; sepet ve
+  // checkout bu tutara KDV'yi bir kez ekler.
+  const vatAmount = roundMoney(net * vatRate);
+  const totalWithVat = roundMoney(net + vatAmount);
+
   const breakdown: PriceBreakdown = {
     material: {
       filamentGrams: roundMoney(estimate.modelGrams * quantity, 2),
@@ -416,9 +466,9 @@ export function computeQuote(input: QuoteInput): QuoteResult {
     },
     subtotal: net,
     totalBeforeVat: net,
-    vatRate: 0,
-    vatAmount: 0,
-    totalWithVat: net,
+    vatRate,
+    vatAmount,
+    totalWithVat,
     pricePerUnit,
     totalPrice: net,
     quantityDiscount,
