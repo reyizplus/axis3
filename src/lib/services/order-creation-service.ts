@@ -14,10 +14,17 @@
 
 import { randomBytes, randomUUID } from 'crypto';
 import { createClient, createServiceClient } from '@/lib/supabase/server';
-import { PricingEngine } from '@/lib/pricing';
+import { PricingEngine, isSlicingEnabled } from '@/lib/pricing';
 import type { PriceBreakdown as EngineBreakdown } from '@/lib/pricing/types';
 import { calculateOrderTotals, hasPriceDrift } from '@/lib/services/order-totals';
 import { isMissingFunctionError } from '@/lib/supabase/errors';
+import { getCachedAnalysis, saveAnalysis } from '@/lib/pricing/server/analysis-cache';
+import {
+  resolveSliceSelection,
+  speedMultiplierFromTimeMultiplier,
+} from '@/lib/pricing/server/resolve-slice-selection';
+import { profileHash, type SliceProfileV1 } from '@/lib/pricing/server/slicer-profile';
+import { sliceModel } from '@/lib/pricing/server/slicer-client';
 
 export interface OrderItemInput {
   fileId: string;
@@ -410,6 +417,64 @@ async function resolvePreorder(
   };
 }
 
+/**
+ * Sipariş fiyatı için gerçek dilimleme sonucunu garanti eder.
+ *
+ * Önbellekte (file_id, profile_hash) varsa hiçbir şey yapmaz. Yoksa STL'i
+ * indirir, dilimler ve önbelleğe yazar. Başarısızlıkta sipariş oluşturulmaz:
+ * tahmini fiyatla tahsilat yapmak bu işin çözmeye çalıştığı hatanın ta kendisi.
+ */
+async function ensureSlicedAnalysis(
+  service: ReturnType<typeof createServiceClient>,
+  params: {
+    fileId: string;
+    storagePath: string | null;
+    filename: string | null;
+    profile: SliceProfileV1;
+    hash: string;
+  }
+): Promise<void> {
+  const cached = await getCachedAnalysis(service as any, params.fileId, params.hash);
+  if (cached) return;
+
+  if (!params.storagePath) {
+    throw new OrderCreationError('Model dosyası depoda bulunamadı', 409);
+  }
+
+  const { data, error } = await service.storage
+    .from('stl-files')
+    .download(params.storagePath);
+
+  if (error || !data) {
+    throw new OrderCreationError(
+      'Fiyat doğrulanamadı (model dosyası okunamadı). Lütfen tekrar deneyin.',
+      503
+    );
+  }
+
+  let stats;
+  try {
+    stats = await sliceModel(
+      Buffer.from(await data.arrayBuffer()),
+      params.filename || `${params.fileId}.stl`,
+      params.profile
+    );
+  } catch (error) {
+    console.error('[orders] dilimleme başarısız', error);
+    throw new OrderCreationError(
+      'Fiyat doğrulanamadı, lütfen birkaç saniye sonra tekrar deneyin.',
+      503
+    );
+  }
+
+  await saveAnalysis(service as any, {
+    fileId: params.fileId,
+    profileHash: params.hash,
+    profileJson: params.profile,
+    stats,
+  });
+}
+
 export async function createOrder(input: CreateOrderInput): Promise<CreatedOrder> {
   const { items, storeItems } = input;
 
@@ -438,7 +503,7 @@ export async function createOrder(input: CreateOrderInput): Promise<CreatedOrder
     }
 
     const { data: file } = await (supabase.from('files') as any)
-      .select('id, filename, volume_cm3, user_id, deleted_at')
+      .select('id, filename, volume_cm3, user_id, deleted_at, storage_path')
       .eq('id', item.fileId)
       .maybeSingle();
 
@@ -467,6 +532,50 @@ export async function createOrder(input: CreateOrderInput): Promise<CreatedOrder
 
     // Quality settings and custom values are resolved/validated server-side.
     const printSettings = await resolvePrintSettings(supabase, item, technology);
+
+    // Dilimleme profili, önizlemedeki ile AYNI çözümleyiciden geçer. İki taraf
+    // farklı varsayılan kullanırsa profil hash'i ayrışır, önbellek ıskalar ve
+    // sunucu hacim tahminine düşerken müşteri gerçek dilimleme fiyatı görür.
+    let sliceSelection;
+    try {
+      sliceSelection = await resolveSliceSelection(supabase, {
+        materialId: material.id,
+        printSettingId: item.printSettingId ?? null,
+        nozzleSizeMm: item.nozzleSizeMm ?? null,
+        custom: {
+          layerHeight: item.customLayerHeight ?? null,
+          infillPercentage: item.customInfillPercentage ?? null,
+          // İstemci hız çarpanını `customTimeMultiplier = 1 / hız` olarak
+          // gönderiyor; dilimleyici mm/s beklediği için geri çeviriyoruz.
+          speedMultiplier: speedMultiplierFromTimeMultiplier(item.customTimeMultiplier),
+          supportEnabled: true,
+        },
+      });
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : 'Dilimleme seçimleri geçersiz';
+      throw new OrderCreationError(message, 400);
+    }
+
+    const slicerProfileHash = sliceSelection.profile
+      ? profileHash(sliceSelection.profile)
+      : undefined;
+
+    // K1: dilimleme zorunlu. Varsayılan olarak AÇIK; yalnızca açıkça
+    // PRICING_REQUIRE_SLICING=false verilirse tahmini fiyata izin verilir.
+    const requireSlicing =
+      isSlicingEnabled() && process.env.PRICING_REQUIRE_SLICING !== 'false';
+
+    if (slicerProfileHash && sliceSelection.profile && requireSlicing) {
+      await ensureSlicedAnalysis(supabase, {
+        fileId: file.id,
+        storagePath: (file as any).storage_path ?? null,
+        filename: (file as any).filename ?? null,
+        profile: sliceSelection.profile,
+        hash: slicerProfileHash,
+      });
+    }
+
     const preorder = await resolvePreorder(supabase, {
       material: {
         id: material.id,
@@ -492,11 +601,20 @@ export async function createOrder(input: CreateOrderInput): Promise<CreatedOrder
       nozzleSizeMm: item.nozzleSizeMm ?? undefined,
       timeMultiplier: printSettings.timeMultiplier,
       infillPercentage: printSettings.infillPercentage,
+      slicerProfileHash,
       preorderDiscountPercent: preorder.isPreorder ? preorder.discountPercent : null,
     });
 
     if (!result.success) {
       throw new OrderCreationError(result.error || 'Fiyat hesaplanamadı', 422);
+    }
+
+    // Fiyat, müşterinin gördüğü profille doğrulanmadan sipariş oluşmamalı.
+    if (slicerProfileHash && requireSlicing && result.estimationSource !== 'gcode') {
+      throw new OrderCreationError(
+        'Fiyat doğrulanamadı. Lütfen birkaç saniye sonra tekrar deneyin.',
+        503
+      );
     }
 
     const unitPrice = round(result.breakdown.pricePerUnit);

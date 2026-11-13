@@ -97,6 +97,13 @@ export interface PricingInput {
   nozzleSizeMm?: number;
   customProfile?: Partial<SlicerProfile>;
   useGCodeAnalysis: boolean;
+  /**
+   * Dilimleme profilinin hash'i. G-Code analizi YALNIZCA bu hash ile eşleşen
+   * satırdan okunur. Verilmezse hacim tahminine düşülür — "dosyanın en son
+   * analizi" asla kullanılmaz, aksi halde kalite değişiminde eski veriyle
+   * fiyat verilir.
+   */
+  slicerProfileHash?: string;
   preorderDiscountPercent?: number | null;
   /** Material print speed modifier from DB (default 1.0) */
   printSpeedModifier?: number;

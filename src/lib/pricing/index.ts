@@ -6,7 +6,7 @@
  * and must only be imported in API routes / server components.
  */
 
-export { PricingEngine, pricingEngine } from './engine';
+export { PricingEngine, pricingEngine, isSlicingEnabled } from './engine';
 export { CorrectionFactor, correctionFactor } from './correction-factor';
 export { computeQuote, estimateConsumption, PricingError } from './core';
 export type { QuoteInput, QuoteResult, ConsumptionEstimate } from './core';

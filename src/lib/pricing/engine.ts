@@ -11,6 +11,7 @@ import { CorrectionFactor } from './correction-factor';
 import { DeliveryCalculator } from '@/lib/utils/delivery-calculator';
 import { computeQuote, PricingError } from './core';
 import type { QuantityDiscountTier } from './core';
+import { getCachedAnalysis } from './server/analysis-cache';
 
 import type {
   PricingInput,
@@ -34,6 +35,40 @@ function warnOnce(key: string, message: string) {
 function asNumber(value: unknown, fallback: number): number {
   const parsed = typeof value === 'number' ? value : Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+/** Dilimleme kill switch: yalnızca açıkça 'false' verilirse kapanır. */
+export function isSlicingEnabled(): boolean {
+  return process.env.SLICING_ENABLED !== 'false';
+}
+
+/**
+ * G-Code analizinin kullanılıp kullanılmayacağına karar verir.
+ *
+ * Kurallar (hepsi testlidir):
+ * - `useGCodeAnalysis` kapalıysa sorgu yapılmaz.
+ * - Kill switch kapalıysa sorgu yapılmaz (eski davranışa dönüş).
+ * - SLA'da dilimleme yok; sorgu yapılmaz (K3).
+ * - Profil hash'i yoksa sorgu yapılmaz: hangi profille üretildiği bilinmeyen
+ *   bir analizle fiyat vermek sessiz sapma demektir.
+ */
+export function selectGcodeSource(params: {
+  useGCodeAnalysis: boolean;
+  slicingEnabled: boolean;
+  technology: 'FDM' | 'SLA';
+  slicerProfileHash?: string | null;
+}): { shouldQuery: boolean; profileHash: string | null; warning: string | null } {
+  if (!params.useGCodeAnalysis || !params.slicingEnabled) {
+    return { shouldQuery: false, profileHash: null, warning: null };
+  }
+  if (params.technology === 'SLA') {
+    return { shouldQuery: false, profileHash: null, warning: null };
+  }
+  const hash = params.slicerProfileHash?.trim();
+  if (!hash) {
+    return { shouldQuery: false, profileHash: null, warning: 'gcode_profile_missing' };
+  }
+  return { shouldQuery: true, profileHash: hash, warning: null };
 }
 
 // =====================================================
@@ -104,9 +139,20 @@ export class PricingEngine {
         );
       }
 
-      const gcode = input.useGCodeAnalysis
-        ? await this.getGCodeAnalysis(input.fileId)
+      const gcodeSource = selectGcodeSource({
+        useGCodeAnalysis: input.useGCodeAnalysis,
+        slicingEnabled: isSlicingEnabled(),
+        technology: input.technology,
+        slicerProfileHash: input.slicerProfileHash,
+      });
+
+      const gcode = gcodeSource.shouldQuery && gcodeSource.profileHash
+        ? await this.getGCodeAnalysis(input.fileId, gcodeSource.profileHash)
         : null;
+
+      const engineWarnings: string[] = [];
+      if (gcodeSource.warning) engineWarnings.push(gcodeSource.warning);
+      if (gcodeSource.shouldQuery && !gcode) engineWarnings.push('gcode_analysis_missing');
 
       const quote = computeQuote({
         volumeCm3: input.volumeCm3,
@@ -147,6 +193,9 @@ export class PricingEngine {
       for (const warning of quote.warnings) {
         warnOnce(`quote-${warning}`, warning);
       }
+      for (const warning of engineWarnings) {
+        warnOnce(`engine-${warning}`, warning);
+      }
 
       return {
         success: true,
@@ -155,7 +204,7 @@ export class PricingEngine {
         estimatedTime: quote.estimatedTime,
         deliveryDays,
         estimationSource: quote.source,
-        warnings: quote.warnings,
+        warnings: [...quote.warnings, ...engineWarnings],
         error: null,
       };
     } catch (err) {
@@ -220,63 +269,29 @@ export class PricingEngine {
   }
 
   /**
-   * Load the cached G-Code analysis. Returns null when there is no usable
-   * analysis so the caller falls back to the volume estimate.
+   * Profil hash'i ile eşleşen önbellek analizini okur.
+   *
+   * Hash zorunludur: "dosyanın en son analizi" kavramı kaldırıldı, çünkü
+   * kullanıcı kaliteyi değiştirdiğinde eski analiz yeni seçimlerle eşleşip
+   * sessiz bir fiyat sapması üretiyordu.
    */
-  private async getGCodeAnalysis(fileId: string): Promise<{
+  private async getGCodeAnalysis(
+    fileId: string,
+    profileHash: string
+  ): Promise<{
     totalGrams: number;
     supportGrams: number;
     printHours: number;
   } | null> {
-    const { data } = await (this.supabase as any)
-      .from('gcode_analysis_results')
-      .select('filament_weight_grams, support_weight_grams, actual_print_time_hours, total_layer_count, raw_header')
-      .eq('file_id', fileId)
-      .order('created_at', { ascending: false } as any)
-      .limit(1)
-      .maybeSingle();
-
-    if (!data) return null;
-
-    const row = data as any;
-    // Old rows may contain simulated output; never price from those.
-    if (row.raw_header && JSON.stringify(row.raw_header).includes('SIMULATED')) {
-      return null;
-    }
-
-    const totalGrams = asNumber(row.filament_weight_grams, 0);
-    const printHours = asNumber(row.actual_print_time_hours, 0);
-    if (totalGrams <= 0 || printHours <= 0) return null;
+    const cached = await getCachedAnalysis(this.supabase, fileId, profileHash);
+    if (!cached) return null;
 
     return {
-      totalGrams,
-      supportGrams: asNumber(row.support_weight_grams, 0),
-      printHours,
+      totalGrams: cached.grams,
+      // PrusaSlicer toplam gramı verir; destek bu toplamın içindedir.
+      supportGrams: 0,
+      printHours: cached.printSeconds / 3600,
     };
-  }
-
-  /**
-   * Save G-Code analysis result to database cache
-   */
-  async saveAnalysisResult(
-    fileId: string,
-    analysis: import('./types').GCodeAnalysisResult
-  ): Promise<void> {
-    await (this.supabase as any).from('gcode_analysis_results').insert({
-      file_id: fileId,
-      filament_weight_grams: analysis.filamentWeightGrams,
-      support_weight_grams: analysis.supportWeightGrams,
-      actual_print_time_hours: analysis.actualPrintTimeHours,
-      actual_print_time_seconds: analysis.actualPrintTimeSeconds,
-      total_layer_count: analysis.totalLayerCount,
-      filament_length_mm: analysis.filamentLengthMm,
-      total_travel_distance_mm: analysis.totalTravelDistanceMm,
-      total_extrusion_distance_mm: analysis.totalExtrusionDistanceMm,
-      retraction_count: analysis.retractionCount,
-      min_layer_height_mm: analysis.minLayerHeightMm,
-      max_layer_height_mm: analysis.maxLayerHeightMm,
-      raw_header: analysis.rawHeader as any,
-    });
   }
 
   private async getMaterial(materialId: string): Promise<{
