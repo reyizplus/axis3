@@ -8,27 +8,48 @@
 
 import Iyzipay from 'iyzipay';
 
-// Validate environment variables
-if (!process.env.IYZICO_API_KEY) {
-  throw new Error('IYZICO_API_KEY is not defined in environment variables');
+/**
+ * iyzico configuration is resolved lazily.
+ *
+ * The previous version threw at module import time when any env var was
+ * missing. Because payment-service imports this module, a missing key crashed
+ * the whole route on import instead of returning a readable error — and a
+ * placeholder value silently looked "configured".
+ */
+function readConfig() {
+  return {
+    apiKey: process.env.IYZICO_API_KEY?.trim(),
+    secretKey: process.env.IYZICO_SECRET_KEY?.trim(),
+    uri: process.env.IYZICO_BASE_URL?.trim(),
+  };
 }
 
-if (!process.env.IYZICO_SECRET_KEY) {
-  throw new Error('IYZICO_SECRET_KEY is not defined in environment variables');
+export function isIyzicoConfigured(): boolean {
+  const { apiKey, secretKey, uri } = readConfig();
+  return Boolean(apiKey && secretKey && uri);
 }
 
-if (!process.env.IYZICO_BASE_URL) {
-  throw new Error('IYZICO_BASE_URL is not defined in environment variables');
-}
+let cachedClient: Iyzipay | null = null;
 
 /**
- * Configured iyzico client instance
+ * Returns a configured iyzico client.
+ * Throws a descriptive error only when actually called.
  */
-export const iyzipayClient = new Iyzipay({
-  apiKey: process.env.IYZICO_API_KEY,
-  secretKey: process.env.IYZICO_SECRET_KEY,
-  uri: process.env.IYZICO_BASE_URL
-});
+export function getIyzipayClient(): Iyzipay {
+  const { apiKey, secretKey, uri } = readConfig();
+
+  if (!apiKey || !secretKey || !uri) {
+    throw new Error(
+      'iyzico yapılandırılmamış: IYZICO_API_KEY, IYZICO_SECRET_KEY ve IYZICO_BASE_URL tanımlanmalıdır.'
+    );
+  }
+
+  if (!cachedClient) {
+    cachedClient = new Iyzipay({ apiKey, secretKey, uri });
+  }
+
+  return cachedClient;
+}
 
 /**
  * iyzico Constants

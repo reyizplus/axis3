@@ -1,238 +1,161 @@
 /**
- * Pricing Engine v2 - The Axis3 Pricing Brain
- * 
- * 4 Sütunlu Fiyatlandırma Modeli:
- * 1. Materyal Maliyeti: (gram maliyeti + %10 fire payı)
- * 2. Makine Amortismanı: (toplam baskı süresi × saatlik makine ücreti)
- * 3. İşçilik: (dosya hazırlığı + destek ayıklama + son işlem)
- * 4. Risk Primi: %15-20 güvenlik marjı
- * 
- * CuraEngine entegrasyonu ile gerçek G-Code analizi.
+ * Pricing Engine - database-backed loader around the pure pricing core.
+ *
+ * The math lives in `./core.ts`. This class only resolves the current
+ * material/machine/labor/settings values and calls `computeQuote`, so the
+ * browser preview and the server-side order creation run the exact same rules.
  */
 
 import { createClient } from '@/lib/supabase/client';
-import { deliveryCalculator } from '@/lib/utils/delivery-calculator';
-import { correctionFactor } from './correction-factor';
+import { CorrectionFactor } from './correction-factor';
+import { DeliveryCalculator } from '@/lib/utils/delivery-calculator';
+import { computeQuote, PricingError } from './core';
+import type { QuantityDiscountTier } from './core';
 
 import type {
   PricingInput,
   PricingResult,
   PriceBreakdown as PricingPriceBreakdown,
-  MaterialCost,
-  MachineAmortizationCost,
-  ElectricityCost,
-  LaborCost,
-  RiskPremium,
-  ProfitMarginCost,
 } from './types';
 
 export type { PricingInput, PricingResult };
 
-// =====================================================
-// DEFAULT VALUES
-// =====================================================
-
 const DEFAULT_WASTE_PERCENTAGE = 10.0;
+const DEFAULT_FILAMENT_BUFFER = 1.05;
+
+const warnedOnce = new Set<string>();
+
+function warnOnce(key: string, message: string) {
+  if (warnedOnce.has(key)) return;
+  warnedOnce.add(key);
+  console.warn(`[PricingEngine] ${message}`);
+}
+
+function asNumber(value: unknown, fallback: number): number {
+  const parsed = typeof value === 'number' ? value : Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
 
 // =====================================================
 // PRICING ENGINE CLASS
 // =====================================================
 
 export class PricingEngine {
-  private supabase = createClient();
+  private client: any = null;
+  private correctionFactor: CorrectionFactor;
+  private deliveryCalculator: DeliveryCalculator;
 
   /**
-   * Main pricing calculation entry point
-   * 
-   * Flow:
-   * 1. Load material & machine data from DB
-   * 2. Retrieve G-Code analysis if available (real data)
-   * 3. Fall back to volume-based estimation if no G-Code
-   * 4. Apply Experience Correction Factor (ECF)
-   * 5. Calculate 4-column pricing
-   * 6. Return result
+   * @param client Optional Supabase client. Server-side code MUST pass a server
+   *               client; when omitted the browser client is used.
    */
+  constructor(client?: any) {
+    this.client = client ?? null;
+    const resolved = client ?? undefined;
+    this.correctionFactor = new CorrectionFactor(resolved);
+    this.deliveryCalculator = new DeliveryCalculator(resolved);
+  }
+
+  private get supabase(): any {
+    if (!this.client) this.client = createClient();
+    return this.client;
+  }
+
   async calculatePrice(input: PricingInput): Promise<PricingResult> {
     try {
-      const [material, machineSettings, laborSettings, riskPremium, elecRate, srvFee, profitMarg] = await Promise.all([
-        this.getMaterial(input.materialId),
-        this.getMachineRate(input.machineType),
-        this.getLaborSettings(input.technology),
-        this.getRiskPremium(input.technology),
-        this.getElectricityRate(),
-        this.getServiceFee(),
-        this.getProfitMarginMultiplier(),
-      ]);
+      const [material, machine, labor, riskPremium, electricity, serviceFee, profit, coefficients] =
+        await Promise.all([
+          this.getMaterial(input.materialId),
+          this.getMachineRate(input.machineType),
+          this.getLaborSettings(input.technology),
+          this.getRiskPremium(input.technology),
+          this.getElectricityRate(),
+          this.getServiceFee(),
+          this.getProfitMarginMultiplier(),
+          this.correctionFactor.getCoefficients(),
+        ]);
 
       if (!material) {
         return this.errorResult('Malzeme bulunamadı');
       }
 
-      // Step 1: Get real G-Code data or use volume-based estimation
-      let filamentGrams: number;
-      let supportGrams: number;
-      let rawPrintTimeHours: number;
-      let layerCount: number;
+      const [estimation, bufferSetting, discountTiers] = await Promise.all([
+        this.getEstimationSettings(),
+        this.getSettingWithEnabled('filament_buffer_multiplier', DEFAULT_FILAMENT_BUFFER),
+        this.getQuantityDiscountTiers(),
+      ]);
 
-      const extraBufferSetting = await this.getSettingWithEnabled('filament_buffer_multiplier', 1.20);
-      const extraBuffer = extraBufferSetting.enabled ? extraBufferSetting.value : 1.0;
-      if (input.useGCodeAnalysis) {
-        const analysis = await this.getGCodeAnalysis(input.fileId, material.density);
-        if (analysis) {
-          filamentGrams = analysis.filamentWeightGrams * extraBuffer;
-          supportGrams = analysis.supportWeightGrams * extraBuffer;
-          rawPrintTimeHours = analysis.actualPrintTimeHours;
-          layerCount = analysis.totalLayerCount;
-        } else {
-          const est = await this.estimateFromVolume(input.volumeCm3, material, input.technology, input.timeMultiplier, input.infillPercentage);
-          filamentGrams = est.filamentGrams;
-          supportGrams = est.supportGrams;
-          rawPrintTimeHours = est.printTimeHours;
-          layerCount = est.layerCount;
-        }
-      } else {
-        const est = await this.estimateFromVolume(input.volumeCm3, material, input.technology, input.timeMultiplier, input.infillPercentage);
-        filamentGrams = est.filamentGrams;
-        supportGrams = est.supportGrams;
-        rawPrintTimeHours = est.printTimeHours;
-        layerCount = est.layerCount;
+      if (!machine.configured) {
+        warnOnce(
+          `machine-rate-${input.machineType}`,
+          `${input.machineType} için makine saatlik ücreti tanımlı değil; varsayılan ${machine.hourlyRate} TL/saat kullanılıyor.`
+        );
+      }
+      if (machine.hourlyRate === 0) {
+        warnOnce(
+          `machine-zero-${input.machineType}`,
+          `${input.machineType} makine saatlik ücreti 0; makine maliyeti fiyata eklenmiyor. Admin > fiyatlandırma ayarlarını kontrol edin.`
+        );
+      }
+      if (!profit.configured) {
+        warnOnce(
+          'profit-margin-missing',
+          'Kâr marjı çarpanı tanımlı değil; 1.00 (kâr eklenmiyor) kullanılıyor.'
+        );
       }
 
-      // Step 2: Apply Experience Correction Factor (ECF)
-      const correctedTime = await correctionFactor.apply(rawPrintTimeHours, input.quantity);
+      const gcode = input.useGCodeAnalysis
+        ? await this.getGCodeAnalysis(input.fileId)
+        : null;
 
-      // Step 3: Calculate Material Cost (column 1)
-      const totalGrams = filamentGrams + supportGrams;
-      const wasteMultiplier = 1 + (material.wastePercentage ?? DEFAULT_WASTE_PERCENTAGE) / 100;
-      const materialCost: MaterialCost = {
-        filamentGrams: this.round(filamentGrams, 2),
-        supportGrams: this.round(supportGrams, 2),
-        totalGrams: this.round(totalGrams, 2),
-        wastePercentage: material.wastePercentage ?? DEFAULT_WASTE_PERCENTAGE,
-        unitCostPerGram: material.costPerGram,
-        subtotal: this.round(totalGrams * material.costPerGram * wasteMultiplier),
-      };
+      const quote = computeQuote({
+        volumeCm3: input.volumeCm3,
+        quantity: input.quantity,
+        technology: input.technology,
+        density: material.density,
+        costPerGram: material.costPerGram,
+        wastePercentage: material.wastePercentage,
+        printSpeedModifier: material.printSpeedModifier,
+        infillPercentage: input.infillPercentage ?? (input.technology === 'SLA' ? 100 : 20),
+        timeMultiplier: input.timeMultiplier ?? 1,
+        gcode,
+        preorderDiscountPercent: input.preorderDiscountPercent ?? null,
+        labor,
+        coefficients,
+        estimation: {
+          ...estimation,
+          filamentBufferMultiplier: bufferSetting.enabled
+            ? bufferSetting.value
+            : 1,
+        },
+        rates: {
+          machineHourlyRate: machine.hourlyRate,
+          electricityRatePerHour: electricity.rate,
+          laborHourlyRate: labor.hourlyRate,
+          riskPercentage: riskPremium.premiumPercentage,
+          serviceFee: serviceFee.fee,
+          profitMultiplier: profit.multiplier,
+        },
+        quantityDiscountTiers: discountTiers,
+      });
 
-      // Step 4: Calculate Machine Amortization (column 2)
-      const machineAmortization: MachineAmortizationCost = {
-        correctedPrintTimeHours: correctedTime.totalCorrectedHours,
-        hourlyRate: machineSettings.hourlyRate,
-        subtotal: this.round(correctedTime.totalCorrectedHours * machineSettings.hourlyRate),
-      };
-
-      // Step 5: Calculate Labor Cost (column 3)
-      const laborTotalMinutes =
-        laborSettings.filePrepMinutes +
-        laborSettings.supportRemovalMinutes +
-        laborSettings.postProcessingMinutes;
-      const laborCost: LaborCost = {
-        filePrepMinutes: laborSettings.filePrepMinutes,
-        supportRemovalMinutes: laborSettings.supportRemovalMinutes,
-        postProcessingMinutes: laborSettings.postProcessingMinutes,
-        totalMinutes: laborTotalMinutes,
-        hourlyRate: laborSettings.hourlyRate,
-        subtotal: this.round((laborTotalMinutes / 60) * laborSettings.hourlyRate),
-      };
-
-      // Step 6: Calculate Electricity Cost (column 3b)
-      const electricityCost: ElectricityCost = {
-        printTimeHours: correctedTime.totalCorrectedHours,
-        rate: elecRate.rate,
-        subtotal: this.round(correctedTime.totalCorrectedHours * elecRate.rate),
-      };
-
-      // Step 7: Calculate subtotal before risk & margin
-      const baseSubtotal = materialCost.subtotal + machineAmortization.subtotal
-        + electricityCost.subtotal + laborCost.subtotal;
-
-      // Step 8: Apply Risk Premium
-      const riskPremiumCost: RiskPremium = {
-        baseTotal: this.round(baseSubtotal),
-        premiumPercentage: riskPremium.premiumPercentage,
-        subtotal: this.round(baseSubtotal * (riskPremium.premiumPercentage / 100)),
-      };
-
-      // Step 9: Fixed Service Fee
-      const serviceFee = srvFee.fee;
-
-      // Step 10: Profit Margin (skip if disabled)
-      const profitBase = baseSubtotal + riskPremiumCost.subtotal + serviceFee;
-      const profitEnabled = profitMarg.enabled !== false;
-      const effectiveMultiplier = profitEnabled ? profitMarg.multiplier : 1;
-      const profitMarginCost: ProfitMarginCost = {
-        baseTotal: this.round(profitBase),
-        multiplier: effectiveMultiplier,
-        subtotal: this.round(profitBase * (effectiveMultiplier - 1)),
-      };
-
-      // Step 11: Calculate final totals
-      let totalBeforeDiscount = (baseSubtotal + riskPremiumCost.subtotal
-        + serviceFee + profitMarginCost.subtotal) * input.quantity;
-
-      // Apply quantity discount (configurable tiers)
-      let quantityDiscount: number | undefined;
-      const discountTiers = await this.getQuantityDiscountTiers();
-      const sorted = [...discountTiers].sort((a, b) => b.minQty - a.minQty);
-      for (const tier of sorted) {
-        if (input.quantity >= tier.minQty) {
-          quantityDiscount = this.round(totalBeforeDiscount * (tier.discountPercent / 100));
-          totalBeforeDiscount -= quantityDiscount;
-          break;
-        }
-      }
-
-      // Apply preorder discount
-      let preorderDiscount: number | undefined;
-      if (input.preorderDiscountPercent != null && input.preorderDiscountPercent > 0) {
-        const pdAmount = totalBeforeDiscount * (input.preorderDiscountPercent / 100);
-        preorderDiscount = this.round(pdAmount);
-        totalBeforeDiscount -= preorderDiscount;
-      }
-
-      const totalNet = totalBeforeDiscount;
-      const pricePerUnit = this.round(totalNet / input.quantity);
-
-      // Step 12: Calculate delivery days
-      const deliveryDays = await deliveryCalculator.calculateSingleItemDelivery(
-        correctedTime.totalCorrectedHours,
+      const deliveryDays = await this.deliveryCalculator.calculateSingleItemDelivery(
+        quote.estimatedTime.totalOrderHours ?? quote.estimatedTime.correctedTimeHours,
         input.technology
       );
 
-      // Step 14: Build final breakdown (no VAT — handled at cart level)
-      const breakdown: PricingPriceBreakdown = {
-        material: materialCost,
-        machineAmortization: machineAmortization,
-        electricity: electricityCost,
-        labor: laborCost,
-        riskPremium: riskPremiumCost,
-        serviceFee: this.round(serviceFee),
-        profitMargin: profitMarginCost,
-        subtotal: this.round(totalNet),
-        totalBeforeVat: this.round(totalNet),
-        vatRate: 0,
-        vatAmount: 0,
-        totalWithVat: this.round(totalNet),
-        pricePerUnit,
-        totalPrice: this.round(totalNet),
-        quantityDiscount,
-        preorderDiscount,
-      };
+      for (const warning of quote.warnings) {
+        warnOnce(`quote-${warning}`, warning);
+      }
 
       return {
         success: true,
-        totalPrice: this.round(totalNet),
-        breakdown,
-        estimatedTime: {
-          rawPrintTimeHours: correctedTime.rawPrintTimeHours,
-          correctedTimeHours: correctedTime.totalCorrectedHours,
-          correctionBreakdown: {
-            warmUpMinutes: correctedTime.breakdown.warmUp * 60,
-            calibrationMinutes: correctedTime.breakdown.calibration * 60,
-            bedPrepMinutes: correctedTime.breakdown.bedPrep * 60,
-            deadTimePerPartMinutes: correctedTime.breakdown.deadTime * 60,
-          },
-        },
+        totalPrice: quote.breakdown.totalPrice,
+        breakdown: quote.breakdown as PricingPriceBreakdown,
+        estimatedTime: quote.estimatedTime,
         deliveryDays,
+        estimationSource: quote.source,
+        warnings: quote.warnings,
         error: null,
       };
     } catch (err) {
@@ -242,23 +165,35 @@ export class PricingEngine {
     }
   }
 
-  /**
-   * Estimate print parameters from volume (fallback when no G-Code)
-   * Uses infill percentage and adds extra filament buffer
-   * Values are loaded from global_settings DB table with fallbacks
-   */
+  // =====================================================
+  // SETTINGS LOADERS
+  // =====================================================
+
   private async getEstimationSettings(): Promise<{
     shellRatio: number;
     supportRatio: number;
     printRateFdm: number;
     printRateSla: number;
-    defaultLayerCount: number;
+    filamentBufferMultiplier: number;
   }> {
+    const fallback = {
+      shellRatio: 0.4,
+      supportRatio: 0.15,
+      printRateFdm: 15,
+      printRateSla: 6,
+      filamentBufferMultiplier: DEFAULT_FILAMENT_BUFFER,
+    };
+
     try {
-      const { data } = await (this.supabase
-        .from('global_settings') as any)
+      const { data } = await (this.supabase.from('global_settings') as any)
         .select('key, value')
-        .in('key', ['estimation_shell_ratio', 'estimation_support_ratio', 'estimation_print_rate_fdm', 'estimation_print_rate_sla', 'estimation_default_layer_count']);
+        .in('key', [
+          'estimation_shell_ratio',
+          'estimation_support_ratio',
+          'estimation_print_rate_fdm',
+          'estimation_print_rate_sla',
+          'estimation_default_layer_count',
+        ]);
 
       const settings: Record<string, any> = {};
       if (data) {
@@ -267,60 +202,35 @@ export class PricingEngine {
         });
       }
 
+      const shellRatio = asNumber(settings.estimation_shell_ratio?.value, fallback.shellRatio);
+      const supportRatio = asNumber(settings.estimation_support_ratio?.value, fallback.supportRatio);
+      const printRateFdm = asNumber(settings.estimation_print_rate_fdm?.value, fallback.printRateFdm);
+      const printRateSla = asNumber(settings.estimation_print_rate_sla?.value, fallback.printRateSla);
+
       return {
-        shellRatio: settings.estimation_shell_ratio?.value ?? 0.4,
-        supportRatio: settings.estimation_support_ratio?.value ?? 0.15,
-        printRateFdm: settings.estimation_print_rate_fdm?.value ?? 15,
-        printRateSla: settings.estimation_print_rate_sla?.value ?? 6,
-        defaultLayerCount: settings.estimation_default_layer_count?.value ?? 250,
+        shellRatio: Math.min(1, Math.max(0, shellRatio)),
+        supportRatio: Math.min(1, Math.max(0, supportRatio)),
+        printRateFdm: printRateFdm > 0 ? printRateFdm : fallback.printRateFdm,
+        printRateSla: printRateSla > 0 ? printRateSla : fallback.printRateSla,
+        filamentBufferMultiplier: fallback.filamentBufferMultiplier,
       };
     } catch {
-      return { shellRatio: 0.4, supportRatio: 0.15, printRateFdm: 15, printRateSla: 6, defaultLayerCount: 250 };
+      return fallback;
     }
   }
 
-  private async estimateFromVolume(
-    volumeCm3: number,
-    material: {
-      density: number;
-      costPerGram: number;
-      wastePercentage?: number;
-      printSpeedModifier?: number;
-    },
-    technology: string = 'FDM',
-    timeMultiplier: number = 1.0,
-    infillPercentage: number = 100
-  ): Promise<{ filamentGrams: number; supportGrams: number; printTimeHours: number; layerCount: number }> {
-    const estSettings = await this.getEstimationSettings();
-    const effectiveVolumeRatio = estSettings.shellRatio + (1 - estSettings.shellRatio) * (infillPercentage / 100);
-    const effectiveVolume = volumeCm3 * effectiveVolumeRatio;
-
-    const baseGrams = effectiveVolume * material.density;
-    const supportGrams = baseGrams * estSettings.supportRatio;
-    const filamentGrams = baseGrams + supportGrams;
-
-    const baseRate = technology === 'SLA' ? estSettings.printRateSla : estSettings.printRateFdm;
-    const speedMod = material.printSpeedModifier ?? 1.0;
-    const estimated = (volumeCm3 / (baseRate * speedMod)) * timeMultiplier;
-    const printTimeHours = Math.max(estimated, 0.3);
-
-    const layerCount = estSettings.defaultLayerCount;
-
-    return { filamentGrams, supportGrams, printTimeHours, layerCount };
-  }
-
   /**
-   * Get G-Code analysis result from database cache
+   * Load the cached G-Code analysis. Returns null when there is no usable
+   * analysis so the caller falls back to the volume estimate.
    */
-  private async getGCodeAnalysis(fileId: string, materialDensity?: number): Promise<{
-    filamentWeightGrams: number;
-    supportWeightGrams: number;
-    actualPrintTimeHours: number;
-    totalLayerCount: number;
+  private async getGCodeAnalysis(fileId: string): Promise<{
+    totalGrams: number;
+    supportGrams: number;
+    printHours: number;
   } | null> {
     const { data } = await (this.supabase as any)
       .from('gcode_analysis_results')
-      .select('filament_weight_grams, support_weight_grams, actual_print_time_hours, total_layer_count')
+      .select('filament_weight_grams, support_weight_grams, actual_print_time_hours, total_layer_count, raw_header')
       .eq('file_id', fileId)
       .order('created_at', { ascending: false } as any)
       .limit(1)
@@ -329,18 +239,26 @@ export class PricingEngine {
     if (!data) return null;
 
     const row = data as any;
+    // Old rows may contain simulated output; never price from those.
+    if (row.raw_header && JSON.stringify(row.raw_header).includes('SIMULATED')) {
+      return null;
+    }
+
+    const totalGrams = asNumber(row.filament_weight_grams, 0);
+    const printHours = asNumber(row.actual_print_time_hours, 0);
+    if (totalGrams <= 0 || printHours <= 0) return null;
+
     return {
-      filamentWeightGrams: row.filament_weight_grams || 0,
-      supportWeightGrams: row.support_weight_grams || 0,
-      actualPrintTimeHours: row.actual_print_time_hours || 0,
-      totalLayerCount: row.total_layer_count || 0,
+      totalGrams,
+      supportGrams: asNumber(row.support_weight_grams, 0),
+      printHours,
     };
   }
 
   /**
    * Save G-Code analysis result to database cache
    */
-  private async saveAnalysisResult(
+  async saveAnalysisResult(
     fileId: string,
     analysis: import('./types').GCodeAnalysisResult
   ): Promise<void> {
@@ -361,36 +279,42 @@ export class PricingEngine {
     });
   }
 
-  /**
-   * Load material data from database
-   */
   private async getMaterial(materialId: string): Promise<{
     costPerGram: number;
     density: number;
     wastePercentage: number;
     printSpeedModifier: number;
   } | null> {
-    const { data } = await (this.supabase
-      .from('materials') as any)
+    const { data } = await (this.supabase.from('materials') as any)
       .select('cost_per_gram, density, waste_percentage, print_speed_modifier')
       .eq('id', materialId)
       .eq('is_active', true)
-      .single();
+      .maybeSingle();
 
     if (!data) return null;
 
+    const costPerGram = asNumber((data as any).cost_per_gram, 0);
+    const density = asNumber((data as any).density, 0);
+
+    if (costPerGram <= 0) {
+      throw new PricingError('Malzeme birim fiyatı (TL/g) tanımlı değil.');
+    }
+    if (density <= 0) {
+      throw new PricingError('Malzeme yoğunluğu tanımlı değil.');
+    }
+
     return {
-      costPerGram: (data as any).cost_per_gram || 0,
-      density: (data as any).density || 1.24,
-      wastePercentage: (data as any).waste_percentage ?? DEFAULT_WASTE_PERCENTAGE,
-      printSpeedModifier: (data as any).print_speed_modifier ?? 1.0,
+      costPerGram,
+      density,
+      wastePercentage: asNumber((data as any).waste_percentage, DEFAULT_WASTE_PERCENTAGE),
+      printSpeedModifier: asNumber((data as any).print_speed_modifier, 1.0),
     };
   }
 
-  /**
-   * Get machine hourly rate from database
-   */
-  private async getMachineRate(machineType: string): Promise<{ hourlyRate: number }> {
+  private async getMachineRate(machineType: string): Promise<{
+    hourlyRate: number;
+    configured: boolean;
+  }> {
     const { data } = await (this.supabase as any)
       .from('machine_amortization')
       .select('hourly_rate')
@@ -399,7 +323,10 @@ export class PricingEngine {
       .maybeSingle();
 
     if (data) {
-      return { hourlyRate: (data as any).hourly_rate || 5 };
+      return {
+        hourlyRate: Math.max(0, asNumber((data as any).hourly_rate, 0)),
+        configured: true,
+      };
     }
 
     const defaultRates: Record<string, number> = {
@@ -409,52 +336,45 @@ export class PricingEngine {
       SLA_INDUSTRIAL: 25,
     };
 
-    return { hourlyRate: defaultRates[machineType] || 5 };
+    return {
+      hourlyRate: defaultRates[machineType] ?? 5,
+      configured: false,
+    };
   }
 
-  /**
-   * Get labor settings from database
-   */
   private async getLaborSettings(technology: string): Promise<{
     filePrepMinutes: number;
     supportRemovalMinutes: number;
     postProcessingMinutes: number;
     hourlyRate: number;
   }> {
+    const defaults =
+      technology === 'SLA'
+        ? { file_prep: 10, support_removal: 5, post_processing: 20 }
+        : { file_prep: 10, support_removal: 15, post_processing: 10 };
+
     const { data: settings } = await (this.supabase as any)
       .from('labor_time_settings')
-      .select('task_type, base_minutes, per_complexity_minutes')
+      .select('task_type, base_minutes, is_active')
       .eq('is_active', true);
 
-    const minutes: Record<string, number> = {
-      file_prep: 10,
-      support_removal: 15,
-      post_processing: 10,
-    };
-
+    const minutes: Record<string, number> = { ...defaults };
     if (settings) {
       (settings as { task_type: string; base_minutes: number }[]).forEach((row) => {
-        minutes[row.task_type] = row.base_minutes;
+        if (row.task_type in minutes) {
+          minutes[row.task_type] = Math.max(0, asNumber(row.base_minutes, minutes[row.task_type]));
+        }
       });
     }
 
-    if (technology === 'SLA') {
-      minutes.support_removal = 5;
-      minutes.post_processing = 20;
-    }
-
-    const laborRate = await this.getLaborRate();
     return {
       filePrepMinutes: minutes.file_prep,
       supportRemovalMinutes: minutes.support_removal,
       postProcessingMinutes: minutes.post_processing,
-      hourlyRate: laborRate,
+      hourlyRate: await this.getLaborRate(),
     };
   }
 
-  /**
-   * Get risk premium percentage from database
-   */
   private async getRiskPremium(technology: string): Promise<{ premiumPercentage: number }> {
     const { data } = await (this.supabase as any)
       .from('risk_premium_settings')
@@ -464,97 +384,106 @@ export class PricingEngine {
       .maybeSingle();
 
     if (data) {
-      return { premiumPercentage: (data as any).premium_percentage || 15 };
+      // An explicit 0 is a valid business choice (risk disabled), not a
+      // missing value — do not replace it with the 15% default.
+      return { premiumPercentage: Math.max(0, asNumber((data as any).premium_percentage, 0)) };
     }
 
     return { premiumPercentage: technology === 'SLA' ? 20 : 15 };
   }
 
-  /**
-   * Get quantity discount tiers from global settings
-   */
-  private async getQuantityDiscountTiers(): Promise<{ minQty: number; discountPercent: number }[]> {
+  private async getQuantityDiscountTiers(): Promise<QuantityDiscountTier[]> {
     try {
-      const { data } = await (this.supabase
-        .from('global_settings') as any)
+      const { data } = await (this.supabase.from('global_settings') as any)
         .select('value')
         .eq('key', 'quantity_discounts')
         .maybeSingle();
 
       if (!data) return [];
       const raw = (data as any).value;
-      // Return empty if disabled
       if (raw?.enabled === false) return [];
 
       const tiers = (raw?.tiers || raw || []) as { minQty?: number; discountPercent?: number }[];
       return tiers
-        .map((t: { minQty?: number; discountPercent?: number }) => ({
-          minQty: Number(t.minQty) || 0,
-          discountPercent: Number(t.discountPercent) || 0,
+        .map((tier) => ({
+          minQty: Math.floor(asNumber(tier.minQty, 0)),
+          discountPercent: Math.min(100, Math.max(0, asNumber(tier.discountPercent, 0))),
         }))
-        .filter((t: { minQty: number }) => t.minQty > 0);
+        .filter((tier) => tier.minQty > 0);
     } catch {
       return [];
     }
   }
 
-  /**
-   * Get a global setting with its enabled status
-   */
-  private async getSettingWithEnabled(key: string, defaultVal: number): Promise<{ value: number; enabled: boolean }> {
+  private async getSettingWithEnabled(
+    key: string,
+    defaultVal: number
+  ): Promise<{ value: number; enabled: boolean }> {
     try {
-      const { data } = await (this.supabase
-        .from('global_settings') as any)
+      const { data } = await (this.supabase.from('global_settings') as any)
         .select('value')
         .eq('key', key)
         .maybeSingle();
 
       if (!data) return { value: defaultVal, enabled: true };
-      const v = (data as any).value;
+      const raw = (data as any).value;
+
       return {
-        value: typeof v?.value === 'number' ? v.value : defaultVal,
-        enabled: v?.enabled !== false,
+        value: asNumber(raw?.value, defaultVal),
+        enabled: raw?.enabled !== false,
       };
     } catch {
       return { value: defaultVal, enabled: true };
     }
   }
 
-  /**
-   * Get electricity rate per hour from global_settings
-   */
   private async getElectricityRate(): Promise<{ rate: number }> {
-    const s = await this.getSettingWithEnabled('electricity_rate_per_hour', 15);
-    return { rate: s.enabled ? s.value : 0 };
+    const setting = await this.getSettingWithEnabled('electricity_rate_per_hour', 15);
+    return { rate: setting.enabled ? Math.max(0, setting.value) : 0 };
   }
 
-  /**
-   * Get fixed service fee from global_settings
-   */
   private async getServiceFee(): Promise<{ fee: number }> {
-    const s = await this.getSettingWithEnabled('fixed_service_fee', 25);
-    return { fee: s.enabled ? s.value : 0 };
+    const setting = await this.getSettingWithEnabled('fixed_service_fee', 25);
+    return { fee: setting.enabled ? Math.max(0, setting.value) : 0 };
   }
 
-  /**
-   * Get profit margin multiplier and enabled status from global_settings
-   */
-  private async getProfitMarginMultiplier(): Promise<{ multiplier: number; enabled: boolean }> {
-    const s = await this.getSettingWithEnabled('profit_margin_multiplier', 1.3);
-    return { multiplier: s.value, enabled: s.enabled };
+  private async getProfitMarginMultiplier(): Promise<{
+    multiplier: number;
+    enabled: boolean;
+    configured: boolean;
+  }> {
+    try {
+      const { data } = await (this.supabase.from('global_settings') as any)
+        .select('value')
+        .eq('key', 'profit_margin_multiplier')
+        .maybeSingle();
+
+      if (!data) {
+        return { multiplier: 1.3, enabled: true, configured: false };
+      }
+
+      const raw = (data as any).value;
+      const multiplier = Math.max(1, asNumber(raw?.value, 1));
+
+      return {
+        multiplier,
+        enabled: raw?.enabled !== false,
+        configured: true,
+      };
+    } catch {
+      return { multiplier: 1, enabled: true, configured: false };
+    }
   }
 
-  /**
-   * Get labor hourly rate from global_settings
-   */
   private async getLaborRate(): Promise<number> {
-    const s = await this.getSettingWithEnabled('labor_rate_per_hour', 50);
-    return s.enabled ? s.value : 0;
+    const setting = await this.getSettingWithEnabled('labor_rate_per_hour', 50);
+    return setting.enabled ? Math.max(0, setting.value) : 0;
   }
 
-  /**
-   * Save pricing calculation to history
-   */
+  // =====================================================
+  // HISTORY & ERRORS
+  // =====================================================
+
   async savePricingHistory(
     fileId: string,
     input: PricingInput,
@@ -571,15 +500,15 @@ export class PricingEngine {
       settings_snapshot: {
         technology: input.technology,
         machineType: input.machineType,
+        quantity: input.quantity,
         useGCode: input.useGCodeAnalysis,
+        estimationSource: result.estimationSource ?? 'volume',
         correctedTime: result.estimatedTime,
+        warnings: result.warnings ?? [],
       } as any,
     });
   }
 
-  /**
-   * Create error result
-   */
   private errorResult(error: string): PricingResult {
     return {
       success: false,
@@ -599,23 +528,20 @@ export class PricingEngine {
         totalWithVat: 0,
         pricePerUnit: 0,
         totalPrice: 0,
+        directCost: 0,
       },
       estimatedTime: {
         rawPrintTimeHours: 0,
         correctedTimeHours: 0,
+        orderSetupHours: 0,
+        totalOrderHours: 0,
         correctionBreakdown: { warmUpMinutes: 0, calibrationMinutes: 0, bedPrepMinutes: 0, deadTimePerPartMinutes: 0 },
       },
       deliveryDays: 0,
+      estimationSource: 'volume',
+      warnings: [error],
       error,
     };
-  }
-
-  /**
-   * Round to 2 decimal places
-   */
-  private round(value: number, precision: number = 2): number {
-    const multiplier = Math.pow(10, precision);
-    return Math.round(value * multiplier) / multiplier;
   }
 }
 

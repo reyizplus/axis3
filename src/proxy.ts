@@ -225,8 +225,111 @@ function logRequest(pathname: string, user: any | null, ip: string, action?: str
   console.log(`[${timestamp}] ${pathname.replace(/[^\x20-\x7E]/g, '?')} | IP: ${ip} | User: ${userId}${userEmail}${actionText}`);
 }
 
+/**
+ * Blocked IP enforcement.
+ *
+ * `blocked_ips` was previously only a table admins could edit — nothing read
+ * it, so "blocking" an IP had no effect. The list is fetched through the
+ * Supabase REST API (the proxy runs on the edge and cannot use the Supabase
+ * SDK) and cached in module scope for a short time so we do not query the
+ * database on every request.
+ */
+const BLOCKED_IP_CACHE_TTL_MS = 60_000;
+const BLOCKED_IP_TIMEOUT_MS = 3_000;
+
+interface BlockedIpRow {
+  ip_address: string;
+  expires_at: string | null;
+}
+
+let blockedIpCache: { ips: Set<string>; fetchedAt: number } | null = null;
+let blockedIpInFlight: Promise<Set<string> | null> | null = null;
+
+async function fetchBlockedIps(config: SupabaseRestConfig): Promise<Set<string> | null> {
+  try {
+    const response = await fetch(
+      `${config.url}/rest/v1/blocked_ips?select=ip_address,expires_at&is_active=eq.true`,
+      {
+        headers: {
+          apikey: config.key,
+          Authorization: `Bearer ${config.key}`,
+          Accept: 'application/json',
+        },
+        cache: 'no-store',
+        signal: AbortSignal.timeout(BLOCKED_IP_TIMEOUT_MS),
+      }
+    );
+
+    if (!response.ok) {
+      console.error(`[Proxy] blocked_ips okunamadi (${response.status})`);
+      return null;
+    }
+
+    const rows = (await response.json()) as BlockedIpRow[];
+    const now = Date.now();
+
+    return new Set(
+      rows
+        .filter((row) => !row.expires_at || Date.parse(row.expires_at) > now)
+        .map((row) => row.ip_address)
+    );
+  } catch (error) {
+    console.error(
+      '[Proxy] blocked_ips istegi basarisiz:',
+      error instanceof Error ? error.message : error
+    );
+    return null;
+  }
+}
+
+async function isBlockedIp(ip: string): Promise<boolean> {
+  if (!ip || ip === 'unknown') return false;
+
+  const config = getSupabaseRestConfig();
+  if (!config) return false;
+
+  const now = Date.now();
+  const cacheFresh = blockedIpCache && now - blockedIpCache.fetchedAt < BLOCKED_IP_CACHE_TTL_MS;
+
+  if (!cacheFresh) {
+    if (!blockedIpInFlight) {
+      blockedIpInFlight = fetchBlockedIps(config).finally(() => {
+        blockedIpInFlight = null;
+      });
+    }
+
+    const ips = await blockedIpInFlight;
+    // On failure keep the previous list (and retry in a minute) instead of
+    // unblocking everyone or hammering the database with a lookup per request.
+    blockedIpCache = {
+      ips: ips ?? blockedIpCache?.ips ?? new Set<string>(),
+      fetchedAt: Date.now(),
+    };
+  }
+
+  return blockedIpCache?.ips.has(ip) ?? false;
+}
+
 export async function proxy(request: NextRequest, event: NextFetchEvent) {
   const { pathname, hostname } = request.nextUrl;
+
+  // Get client IP address
+  const clientIP = getClientIP(request);
+
+  // Enforce the admin-managed block list before doing anything else.
+  if (await isBlockedIp(clientIP)) {
+    console.warn(`[Proxy] Blocked IP rejected: ${clientIP} ${pathname}`);
+    return new NextResponse('Erisiminiz engellendi.', {
+      status: 403,
+      headers: { 'content-type': 'text/plain; charset=utf-8' },
+    });
+  }
+
+  // API routes are not covered by the session-refresh flow (see matcher).
+  // Enforce the block list there too, then leave them untouched.
+  if (pathname.startsWith('/api/')) {
+    return NextResponse.next();
+  }
 
   // Canonical domain redirect: www.axis3.com.tr -> axis3.com.tr
   if (hostname.startsWith('www.') && process.env.NODE_ENV === 'production') {
@@ -251,9 +354,6 @@ export async function proxy(request: NextRequest, event: NextFetchEvent) {
     console.error('[Proxy] updateSession error:', error);
     response = NextResponse.next();
   }
-
-  // Get client IP address
-  const clientIP = getClientIP(request);
 
   // Log request (unless excluded)
   if (!shouldSkipLogging) {
@@ -302,12 +402,14 @@ export const config = {
   matcher: [
     /*
      * Match all request paths except:
-     * - api/ (handled separately)
      * - _next/static (static files)
      * - _next/image (image optimization files)
      * - favicon.ico
      * - public folder / static image files
+     *
+     * API routes are included so the blocked-IP list is enforced there too;
+     * the proxy returns before the session-refresh flow for them.
      */
-    '/((?!api/|_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)',
+    '/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)',
   ],
 };

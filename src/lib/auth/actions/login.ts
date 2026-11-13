@@ -22,14 +22,15 @@ export async function signIn(formData: FormData): Promise<AuthResult<{ requiresT
 
   const { email, password } = validated.data;
 
-  if (!email.endsWith('@axis3.com.tr')) {
-    try {
-      const rateCheck = await checkRateLimit(`login:${email}`, 'login');
-      if (!rateCheck.allowed) {
-        return { success: false, error: 'Çok fazla giriş denemesi. Lütfen daha sonra tekrar deneyin.' };
-      }
-    } catch {
-      // Rate limit check failed, allow login anyway
+  try {
+    const rateCheck = await checkRateLimit(`login:${email}`, 'login');
+    if (!rateCheck.allowed) {
+      return { success: false, error: 'Çok fazla giriş denemesi. Lütfen daha sonra tekrar deneyin.' };
+    }
+  } catch {
+    // Rate limit check failed: fail closed in production, allow in development
+    if (process.env.NODE_ENV === 'production') {
+      return { success: false, error: 'Giriş şu anda yapılamıyor. Lütfen daha sonra tekrar deneyin.' };
     }
   }
 

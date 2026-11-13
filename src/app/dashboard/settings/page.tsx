@@ -20,6 +20,8 @@ import { AddressFormDialog } from '@/components/dashboard/address-form-dialog';
 import { getUserAddresses, deleteAddress, setDefaultAddress, saveAddress, addressToFormData } from '@/lib/services/address-service';
 import type { SavedAddress, AddressFormData } from '@/lib/services/address-service';
 import { updateProfileSchema } from '@/lib/auth/schemas';
+import { isValidTurkishId } from '@/lib/utils/tckn';
+import { isMissingColumnError } from '@/lib/supabase/errors';
 import {
   User, Phone, Shield, Palette, Save, Loader2, Sun, Moon, Monitor, Mail, Key, CheckCircle2, UserCircle, Settings2,
   MapPin, Plus, Pencil, Trash2, Star,
@@ -31,6 +33,7 @@ interface UserSettings {
   phone: string;
   email: string;
   is_corporate?: boolean;
+  identity_number?: string;
 }
 
 const container = { animate: { transition: { staggerChildren: 0.06 } } };
@@ -53,7 +56,7 @@ export default function SettingsPage() {
   const [changingPassword, setChangingPassword] = useState(false);
   const [mounted, setMounted] = useState(false);
   const [userId, setUserId] = useState('');
-  const [formData, setFormData] = useState<UserSettings>({ full_name: '', phone: '', email: '' });
+  const [formData, setFormData] = useState<UserSettings>({ full_name: '', phone: '', email: '', identity_number: '' });
   const [passwordData, setPasswordData] = useState({ currentPassword: '', newPassword: '', confirmPassword: '' });
   const [addresses, setAddresses] = useState<SavedAddress[]>([]);
   const [addressDialogOpen, setAddressDialogOpen] = useState(false);
@@ -71,16 +74,31 @@ export default function SettingsPage() {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) { toast.error('Kullanıcı bulunamadı'); setLoading(false); return; }
       setUserId(user.id);
-      const { data: userData, error } = await (supabase.from('users').select('full_name, phone, email, is_corporate') as any).eq('id', user.id).maybeSingle();
+
+      const selectColumns = 'full_name, phone, email, is_corporate, identity_number';
+      let { data: userData, error } = await (supabase.from('users').select(selectColumns) as any).eq('id', user.id).maybeSingle();
+
+      // Migration for users.identity_number may not be applied yet.
+      if (error && isMissingColumnError(error, 'identity_number')) {
+        ({ data: userData, error } = await (supabase.from('users').select('full_name, phone, email, is_corporate') as any).eq('id', user.id).maybeSingle());
+      }
+
       if (error || !userData) {
         setFormData({
           full_name: user.user_metadata?.full_name || user.user_metadata?.name || '',
           phone: user.user_metadata?.phone || '',
           email: user.email || '',
+          identity_number: '',
         });
       } else {
-        const d = userData as { full_name: string; phone: string; email: string; is_corporate: boolean };
-        setFormData({ full_name: d.full_name || '', phone: d.phone || '', email: d.email || user.email || '', is_corporate: d.is_corporate || false });
+        const d = userData as { full_name: string; phone: string; email: string; is_corporate: boolean; identity_number?: string | null };
+        setFormData({
+          full_name: d.full_name || '',
+          phone: d.phone || '',
+          email: d.email || user.email || '',
+          is_corporate: d.is_corporate || false,
+          identity_number: d.identity_number || '',
+        });
       }
     } catch {
       toast.error('Ayarlar yüklenirken hata oluştu');
@@ -91,15 +109,46 @@ export default function SettingsPage() {
     if (!userId) { toast.error('Kullanıcı bulunamadı'); return; }
     const result = updateProfileSchema.safeParse({ firstName: formData.full_name?.split(' ')[0] || '', lastName: formData.full_name?.split(' ').slice(1).join(' ') || '', phone: formData.phone });
     if (!result.success) { toast.error(result.error.issues[0].message); return; }
+
+    const identityNumber = (formData.identity_number || '').trim();
+    if (identityNumber && !isValidTurkishId(identityNumber)) {
+      toast.error('Geçerli bir TC kimlik numarası giriniz (11 hane)');
+      return;
+    }
+
     setSaving(true);
     try {
       const supabase = createClient();
-      const { error: updateError } = await (supabase.from('users') as any).update({ full_name: formData.full_name, phone: formData.phone, updated_at: new Date().toISOString() }).eq('id', userId);
+      const patch = {
+        full_name: formData.full_name,
+        phone: formData.phone,
+        identity_number: identityNumber || null,
+        updated_at: new Date().toISOString(),
+      };
+
+      let { error: updateError } = await (supabase.from('users') as any).update(patch).eq('id', userId);
+
+      // If the identity_number migration is not applied yet, still let the user
+      // save their profile instead of failing the whole action.
+      const missingIdentityColumn = isMissingColumnError(updateError, 'identity_number');
+      if (missingIdentityColumn) {
+        const { identity_number: _omitted, ...safePatch } = patch;
+        ({ error: updateError } = await (supabase.from('users') as any).update(safePatch).eq('id', userId));
+      }
+
       if (updateError) {
-        const { error: insertError } = await (supabase.from('users') as any).insert({ id: userId, email: formData.email, full_name: formData.full_name, phone: formData.phone });
+        const insertPatch = missingIdentityColumn
+          ? { id: userId, email: formData.email, full_name: patch.full_name, phone: patch.phone, updated_at: patch.updated_at }
+          : { id: userId, email: formData.email, ...patch };
+        const { error: insertError } = await (supabase.from('users') as any).insert(insertPatch);
         if (insertError) { toast.error('Ayarlar güncellenemedi'); return; }
       }
-      toast.success('Ayarlar başarıyla güncellendi');
+
+      if (missingIdentityColumn && identityNumber) {
+        toast.warning('TC kimlik numarası kaydedilemedi: veritabanı güncellemesi (migration 092) uygulanmamış.');
+      } else {
+        toast.success('Ayarlar başarıyla güncellendi');
+      }
       await refreshProfile();
       await loadSettings();
     } catch {
@@ -240,6 +289,24 @@ export default function SettingsPage() {
                 <Phone className="h-3.5 w-3.5 text-muted-foreground" /> Telefon
               </Label>
               <Input id="phone" value={formData.phone} onChange={(e) => setFormData({ ...formData, phone: e.target.value })} placeholder="+90 5XX XXX XX XX" className="border-2 border-border/60 bg-background/50 backdrop-blur-sm focus:ring-2 focus:ring-primary/30 focus:border-primary/50" />
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="identityNumber" className="text-sm font-medium flex items-center gap-2">
+                <Shield className="h-3.5 w-3.5 text-muted-foreground" /> TC Kimlik No
+              </Label>
+              <Input
+                id="identityNumber"
+                inputMode="numeric"
+                maxLength={11}
+                value={formData.identity_number || ''}
+                onChange={(e) => setFormData({ ...formData, identity_number: e.target.value.replace(/\D/g, '').slice(0, 11) })}
+                placeholder="11 haneli TC kimlik numaranız"
+                className="border-2 border-border/60 bg-background/50 backdrop-blur-sm focus:ring-2 focus:ring-primary/30 focus:border-primary/50"
+              />
+              <p className="text-xs text-muted-foreground">
+                Ödeme yapabilmek için zorunludur (iyzico alıcı doğrulaması).
+              </p>
             </div>
 
             <Button onClick={handleSaveProfile} disabled={saving} className="h-11 rounded-xl px-6 gap-2">

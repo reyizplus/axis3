@@ -42,12 +42,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [loading, setLoading] = useState(true);
   const [mounted, setMounted] = useState(false);
   const router = useRouter();
-  // Client yalnizca ilk render'da olusturulur (her render'da createClient()
-  // cagirmak gereksiz is ve oturum kilidiyle ilgili karisikliklara yol acabilir).
-  const supabaseRef = useRef<ReturnType<typeof createClient> | null>(null);
-  if (!supabaseRef.current) {
-    supabaseRef.current = createClient();
-  }
+  // Client is created once per provider instance. `useState` with a lazy
+  // initializer is the React-safe way to do this; creating it during render
+  // in a ref mutation violates the hooks rules.
+  const [supabase] = useState(() => createClient());
   const userRef = useRef<User | null>(null);
 
   useEffect(() => {
@@ -56,7 +54,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const loadUserProfile = useCallback(async (userId: string) => {
     try {
-      const supabase = supabaseRef.current!;
       const { data } = await supabase
         .from('users')
         .select('id, email, full_name, phone, is_corporate, email_verified, two_factor_enabled')
@@ -92,7 +89,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     } catch (error) {
       console.error('Error loading user profile:', error);
     }
-  }, []);
+  }, [supabase]);
 
   const refreshProfile = useCallback(async () => {
     if (user) {
@@ -102,8 +99,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     if (!mounted) return;
-
-    const supabase = supabaseRef.current!;
 
     supabase.auth.getSession().then(async ({ data: { session } }) => {
       setUser(session?.user ?? null);
@@ -121,7 +116,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     });
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      const previousUser = userRef.current;
       const newUser = session?.user ?? null;
       userRef.current = newUser;
 
@@ -141,12 +135,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     });
 
     return () => subscription.unsubscribe();
-  }, [mounted, loadUserProfile]);
+  }, [mounted, loadUserProfile, supabase]);
 
   const signOut = async () => {
     cartService.setUserId(null);
     clearStoreCart();
-    await supabaseRef.current!.auth.signOut();
+    await supabase.auth.signOut();
     setUser(null);
     setProfile(null);
     router.push('/login');

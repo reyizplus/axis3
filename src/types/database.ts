@@ -165,6 +165,7 @@ export interface Database {
           custom_layer_height: number | null; custom_infill_percentage: number | null
           custom_time_multiplier: number | null; custom_layer_thickness: number | null
           custom_exposure_time: number | null; delivery_days: number | null
+          cart_version: number
           created_at: string
         }
         Insert: {
@@ -178,6 +179,7 @@ export interface Database {
           custom_layer_height?: number | null; custom_infill_percentage?: number | null
           custom_time_multiplier?: number | null; custom_layer_thickness?: number | null
           custom_exposure_time?: number | null; delivery_days?: number | null
+          cart_version?: number
           created_at?: string
         }
         Update: {
@@ -191,6 +193,7 @@ export interface Database {
           custom_layer_height?: number | null; custom_infill_percentage?: number | null
           custom_time_multiplier?: number | null; custom_layer_thickness?: number | null
           custom_exposure_time?: number | null; delivery_days?: number | null
+          cart_version?: number
           created_at?: string
         }
         Relationships: []

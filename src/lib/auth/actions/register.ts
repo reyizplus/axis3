@@ -15,11 +15,9 @@ export async function sendRegistrationCode(email: string): Promise<AuthResult> {
       return { success: false, error: validated.error.issues[0].message };
     }
 
-    if (!email.endsWith('@axis3.com.tr')) {
-      const rateCheck = await checkRateLimit(`register:${email}`, 'register');
-      if (!rateCheck.allowed) {
-        return { success: false, error: 'Çok fazla deneme. 15 dakika sonra tekrar deneyin.' };
-      }
+    const rateCheck = await checkRateLimit(`register:${email}`, 'register');
+    if (!rateCheck.allowed) {
+      return { success: false, error: 'Çok fazla deneme. 15 dakika sonra tekrar deneyin.' };
     }
 
     const serviceClient = createServiceClient();

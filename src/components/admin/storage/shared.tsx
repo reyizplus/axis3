@@ -1,3 +1,33 @@
+/**
+ * Canonical shape of a storage row joined with its owner. Every storage tab
+ * used to declare its own copy of this interface, so a field added in one
+ * place (bucket_name) made the types incompatible at the call sites.
+ */
+export interface AdminStorageFile {
+  id: string;
+  filename: string;
+  original_filename: string;
+  file_size: number;
+  mime_type: string;
+  storage_path: string;
+  bucket_name: string | null;
+  volume_cm3: number | null;
+  surface_area_cm2: number | null;
+  bounding_box_x: number | null;
+  bounding_box_y: number | null;
+  bounding_box_z: number | null;
+  triangle_count: number | null;
+  is_manifold: boolean | null;
+  has_errors: boolean;
+  analysis_status: string;
+  thumbnail_path: string | null;
+  color: string | null;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  metadata: any;
+  created_at: string;
+  users: { id: string; full_name: string | null; email: string | null } | null;
+}
+
 export function formatBytes(bytes: number): string {
   if (bytes === 0) return '0 B';
   const k = 1024;

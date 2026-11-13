@@ -296,7 +296,7 @@ export class CartService {
 
       const { data: existingItems } = await supabase
         .from('cart_items')
-        .select('id, cart_version')
+        .select('id, cart_version, file_id, material_id, print_setting_id')
         .eq('cart_id', cartId);
 
       const existingIds = new Set((existingItems || []).map((i: any) => i.id));

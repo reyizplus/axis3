@@ -13,8 +13,17 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { paymentService } from '@/lib/payment/payment-service';
-import { redirect } from 'next/navigation';
 import { createServiceClient } from '@/lib/supabase/server';
+
+/**
+ * Browser-safe redirect back into the app.
+ *
+ * `redirect()` from next/navigation answers a POST with 307, which makes the
+ * browser re-POST to the target page and fail. 303 forces a GET.
+ */
+function seeOther(request: NextRequest, path: string): NextResponse {
+  return NextResponse.redirect(new URL(path, request.url), 303);
+}
 
 // iyzico callback IPs (for production, add actual iyzico IPs)
 // https://docs.iyzico.com/rest-api/ip-addresses
@@ -36,6 +45,15 @@ const IYZICO_IPS = [
 
 /**
  * Validate request origin
+ *
+ * IMPORTANT: iyzico's Checkout Form posts the callback from the *buyer's
+ * browser*, not from iyzico's servers. An IP allowlist therefore rejects every
+ * real payment in production. Security here comes from validating the token
+ * against iyzico (`checkoutForm.retrieve`) and matching it to the order
+ * (see PaymentService.findOrderForToken).
+ *
+ * Set IYZICO_STRICT_IP_CHECK=true only if you switch to iyzico's
+ * server-to-server notification/webhook, where the IP list is meaningful.
  */
 function validateRequestOrigin(request: NextRequest): boolean {
   // In development, allow all origins
@@ -43,13 +61,14 @@ function validateRequestOrigin(request: NextRequest): boolean {
     return true;
   }
 
-  // Check if request comes from iyzico
   const forwardedFor = request.headers.get('x-forwarded-for');
   const realIp = request.headers.get('x-real-ip');
-  const ip = forwardedFor?.split(',')[0] || realIp || 'unknown';
+  const ip = forwardedFor?.split(',')[0]?.trim() || realIp || 'unknown';
 
-    // In production, validate IP
-  if (process.env.NODE_ENV === 'production') {
+  // Always keep an audit trail of who called the callback.
+  console.log('[Payment Callback] Origin IP:', ip);
+
+  if (process.env.IYZICO_STRICT_IP_CHECK === 'true') {
     if (!IYZICO_IPS.includes(ip)) {
       console.error('[Payment Callback] SECURITY: Invalid IP origin:', ip);
       return false;
@@ -78,9 +97,13 @@ async function checkIdempotency(token: string): Promise<boolean> {
       return false;
     }
 
-    // If payment is already completed or failed, it's a duplicate
-    if (data && ((data as any).payment_status === 'completed' || (data as any).payment_status === 'failed')) {
-            return true;
+    // If payment is already settled (paid/refunded) or definitively failed, it's a duplicate.
+    // NOTE: the orders.payment_status check constraint allows
+    // 'pending' | 'awaiting_confirmation' | 'paid' | 'failed' | 'refunded'.
+    // The previous check compared against 'completed', a value that never exists.
+    const settledStatuses = ['paid', 'refunded', 'failed'];
+    if (data && settledStatuses.includes((data as any).payment_status)) {
+      return true;
     }
 
     return false;
@@ -131,7 +154,7 @@ export async function POST(request: NextRequest) {
           { status: 400 }
         );
       }
-      return redirect('/checkout/failed?error=invalid_token');
+      return seeOther(request, '/checkout/failed?error=invalid_token');
     }
     
     // Security Check 2: Idempotency - prevent duplicate processing
@@ -144,7 +167,7 @@ export async function POST(request: NextRequest) {
           message: 'Payment already processed'
         });
       }
-      return redirect('/checkout/success');
+      return seeOther(request, '/checkout/success');
     }
     
         // Handle payment callback
@@ -163,7 +186,7 @@ export async function POST(request: NextRequest) {
           paymentId: result.paymentId
         });
       }
-      return redirect(`/checkout/success?orderId=${result.orderId}`);
+      return seeOther(request, `/checkout/success?orderId=${result.orderId}`);
     } else {
       // Payment failed
       console.error('[Payment Callback] Payment failed:', result.error);
@@ -179,16 +202,10 @@ export async function POST(request: NextRequest) {
       
       const errorParam = result.error ? `&error=${encodeURIComponent(result.error)}` : '';
       const orderParam = result.orderId ? `orderId=${result.orderId}` : '';
-      return redirect(`/checkout/failed?${orderParam}${errorParam}`);
+      return seeOther(request, `/checkout/failed?${orderParam}${errorParam}`);
     }
   } catch (error) {
-    // Next.js redirect() throws NEXT_REDIRECT - this is expected behavior
-    // We need to re-throw it so Next.js can handle the redirect
-    if (error instanceof Error && error.message === 'NEXT_REDIRECT') {
-      throw error;
-    }
-    
     console.error('[Payment Callback] EXCEPTION:', error);
-    return redirect('/checkout/failed?error=callback_failed');
+    return seeOther(request, '/checkout/failed?error=callback_failed');
   }
 }

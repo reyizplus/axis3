@@ -48,10 +48,23 @@ export interface DeliveryCalculationResult {
 // =====================================================
 
 export class DeliveryCalculator {
-  private supabase = createClient();
+  private client: any = null;
   private cachedSettings: ProductionCapacitySettings | null = null;
   private cacheTimestamp: number = 0;
   private readonly CACHE_DURATION = 5 * 60 * 1000; // 5 minutes
+
+  /**
+   * @param client Optional Supabase client. Required for server-side usage;
+   *               falls back to the browser client when omitted.
+   */
+  constructor(client?: any) {
+    this.client = client ?? null;
+  }
+
+  private get supabase(): any {
+    if (!this.client) this.client = createClient();
+    return this.client;
+  }
 
   /**
    * Get production capacity settings from database

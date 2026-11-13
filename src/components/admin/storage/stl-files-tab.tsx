@@ -5,34 +5,13 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/com
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { toast } from 'sonner';
-import { Box, FileText, User, Eye, Trash2, Download } from 'lucide-react';
+import { Box, User, Eye, Trash2, Download } from 'lucide-react';
 import { StorageFileDetail } from './storage-file-detail';
 import { StorageDeleteDialog } from './storage-delete-dialog';
-import { formatBytes, analysisStatusColors, analysisStatusLabels } from './shared';
+import { formatBytes, analysisStatusColors, analysisStatusLabels, type AdminStorageFile } from './shared';
 import { storageService } from '@/lib/services/storage-service';
 
-interface FileWithUser {
-  id: string;
-  filename: string;
-  original_filename: string;
-  file_size: number;
-  mime_type: string;
-  storage_path: string;
-  volume_cm3: number | null;
-  surface_area_cm2: number | null;
-  bounding_box_x: number | null;
-  bounding_box_y: number | null;
-  bounding_box_z: number | null;
-  triangle_count: number | null;
-  is_manifold: boolean | null;
-  has_errors: boolean;
-  analysis_status: string;
-  thumbnail_path: string | null;
-  color: string | null;
-  metadata: any;
-  created_at: string;
-  users: { id: string; full_name: string | null; email: string | null } | null;
-}
+type FileWithUser = AdminStorageFile;
 
 interface StlFilesTabProps {
   files: FileWithUser[];

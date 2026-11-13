@@ -165,6 +165,10 @@ export interface PriceBreakdown {
   totalPrice: number;
   quantityDiscount?: number;
   preorderDiscount?: number;
+  /** Break-even cost (material + machine + electricity + labor), whole line. */
+  directCost?: number;
+  /** True when a discount was reduced so the order cannot sell below cost. */
+  discountCapped?: boolean;
 }
 
 export interface PricingResult {
@@ -172,11 +176,21 @@ export interface PricingResult {
   totalPrice: number;
   breakdown: PriceBreakdown;
   estimatedTime: {
+    /** Per-unit print time before setup/dead time. */
     rawPrintTimeHours: number;
+    /** Per-unit print time including dead time. */
     correctedTimeHours: number;
+    /** Warm-up + calibration + bed prep, charged once per order. */
+    orderSetupHours?: number;
+    /** Whole line time including quantity and setup. */
+    totalOrderHours?: number;
     correctionBreakdown: CorrectionCoefficients;
   };
   deliveryDays: number;
+  /** Whether the numbers came from a real G-Code analysis or a volume estimate. */
+  estimationSource?: 'gcode' | 'volume';
+  /** Non-fatal configuration problems worth logging. */
+  warnings?: string[];
   error: string | null;
 }
 

@@ -68,6 +68,23 @@ export class CuraSlicer {
         return await this.runCuraEngine(stlPath, outputPath, profile, jobId);
       }
 
+      // CuraEngine is not installed. Previously this branch wrote a 15-line
+      // "SIMULATED G-CODE" file, marked the job completed and let the caller
+      // store fake filament/time figures — the system looked like it was
+      // slicing when it was not. Fail explicitly instead. Development can opt
+      // in with ALLOW_SIMULATED_SLICING=true.
+      const allowSimulation =
+        process.env.NODE_ENV !== 'production' &&
+        process.env.ALLOW_SIMULATED_SLICING === 'true';
+
+      if (!allowSimulation) {
+        const message =
+          'Dilimleyici (CuraEngine) sunucuda kurulu değil. G-Code analizi yapılamıyor.';
+        await this.updateJobStatus(jobId, 'failed', message);
+        return { success: false, gcodePath: null, error: message };
+      }
+
+      console.warn('[CuraSlicer] CuraEngine bulunamadi, SIMULATED slicing (dev only)');
       return await this.simulateSlice(stlPath, outputPath, profile, jobId);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Slicing failed';

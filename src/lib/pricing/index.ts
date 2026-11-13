@@ -8,6 +8,8 @@
 
 export { PricingEngine, pricingEngine } from './engine';
 export { CorrectionFactor, correctionFactor } from './correction-factor';
+export { computeQuote, estimateConsumption, PricingError } from './core';
+export type { QuoteInput, QuoteResult, ConsumptionEstimate } from './core';
 
 export type {
   PricingInput,

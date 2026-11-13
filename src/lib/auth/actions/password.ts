@@ -18,11 +18,9 @@ export async function requestPasswordReset(email: string): Promise<AuthResult> {
 
     const normalizedEmail = email.toLowerCase();
 
-    if (!normalizedEmail.endsWith('@axis3.com.tr')) {
-      const rateCheck = await checkRateLimit(`password-reset:${normalizedEmail}`, 'password-reset');
-      if (!rateCheck.allowed) {
-        return { success: false, error: 'Çok fazla deneme. Lütfen daha sonra tekrar deneyin.' };
-      }
+    const rateCheck = await checkRateLimit(`password-reset:${normalizedEmail}`, 'password-reset');
+    if (!rateCheck.allowed) {
+      return { success: false, error: 'Çok fazla deneme. Lütfen daha sonra tekrar deneyin.' };
     }
 
     const serviceClient = createServiceClient();

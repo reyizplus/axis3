@@ -12,16 +12,15 @@ import {
   ShoppingCart, MapPin, CreditCard, CheckCircle2, AlertCircle, Loader2, ArrowLeft, Package, Clock, Building2, Eye, Store, Printer, Palette, Truck, ShieldCheck, RefreshCw, User, Phone, FileText, Sparkles, ChevronRight,
 } from 'lucide-react';
 import { cartService, type CartItem } from '@/lib/cart/cart-service';
-import { inventoryService } from '@/lib/services/inventory-service';
 import { createClient } from '@/lib/supabase/client';
 import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
 import Link from 'next/link';
 import { Dialog3DViewer } from '@/components/ui/dialog-3d-viewer';
-import { calculateCartDeliveryDays, getEstimatedDeliveryDate } from '@/lib/utils/delivery-calculator';
+import { calculateCartDeliveryDays } from '@/lib/utils/delivery-calculator';
 import { paymentGatewayService, type EnabledGateway } from '@/lib/services/payment-gateway-service';
-import { PricingEngine } from '@/lib/pricing';
 import { getVatRate, getShippingSettings } from '@/lib/services/settings-service';
+import { calculateOrderTotals } from '@/lib/services/order-totals';
 import { getStoreItems, clearStoreCart, type StoreItem } from '@/lib/cart/store-cart';
 import { SavedAddressSelector } from '@/components/checkout/saved-address-selector';
 import { saveAddress } from '@/lib/services/address-service';
@@ -30,12 +29,6 @@ import type { AddressFormData } from '@/lib/services/address-service';
 import Image from 'next/image';
 
 const GATEWAY_ICONS: Record<string, any> = { CreditCard, Building2 };
-
-function generateOrderNumber(): string {
-  const ts = Date.now().toString(36).toUpperCase();
-  const rand = Math.floor(Math.random() * 1679616).toString(36).toUpperCase();
-  return `AXS-${ts}-${rand}`;
-}
 
 const container = { animate: { transition: { staggerChildren: 0.06 } } };
 const itemAnim = {
@@ -121,93 +114,55 @@ export default function CheckoutPage() {
     if (!hasServiceItems && !hasStoreItems) { toast.error('Sepetiniz boş'); return; }
     setIsSubmitting(true);
     try {
-      const supabase = createClient();
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) { toast.error('Oturum süreniz dolmuş'); router.push('/login'); return; }
+      // Sipariş sunucuda oluşturulur: fiyat, stok ve sahiplik doğrulaması
+      // API tarafında yapılır. İstemci yalnızca referans ve adres gönderir.
+      const response = await fetch('/api/v1/orders/create', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          items: cartItems.map((item) => ({
+            fileId: item.fileId,
+            materialId: item.materialId,
+            quantity: item.quantity,
+            color: item.color ?? null,
+            nozzleSizeId: item.nozzleSizeId ?? null,
+            nozzleSizeMm: item.nozzleSizeMm ?? null,
+            printSettingId: item.printSettingId && item.printSettingId !== 'custom' ? item.printSettingId : null,
+            printSettingName: item.printSettingName ?? null,
+            isPreorder: item.isPreorder ?? false,
+            preorderDiscountPercent: item.preorderDiscountPercent ?? null,
+            estimatedRestockDays: item.estimatedRestockDays ?? null,
+            customLayerHeight: item.customLayerHeight ?? null,
+            customInfillPercentage: item.customInfillPercentage ?? null,
+            customTimeMultiplier: item.customTimeMultiplier ?? null,
+            customLayerThickness: item.customLayerThickness ?? null,
+            customExposureTime: item.customExposureTime ?? null,
+          })),
+          storeItems: storeItems.map((item) => ({ productId: item.productId, quantity: item.quantity })),
+          address: {
+            fullName,
+            phone,
+            city,
+            district,
+            neighborhood,
+            street,
+            buildingNo,
+            apartmentNo,
+            zipCode,
+            notes: deliveryNotes,
+          },
+          paymentMethod,
+          deliveryNotes,
+          expectedTotal: Math.round(total * 100) / 100,
+        }),
+      });
 
-      if (hasServiceItems) {
-        for (const item of cartItems) {
-          const avail = await inventoryService.checkMaterialAvailability(item.materialId, item.color, item.nozzleSizeId);
-          if (!avail.available && !avail.canPreorder) { toast.error(`"${item.fileName}" için malzeme stokta yok`); setIsSubmitting(false); return; }
-          if (!avail.available && avail.canPreorder) { if (!(await inventoryService.isPreorderEnabled())) { toast.error('Ön sipariş sistemi kapalı'); setIsSubmitting(false); return; } }
-          if (item.nozzleSizeId) { const ns = await inventoryService.checkNozzleStock(item.nozzleSizeId); if (!ns.inStock && !ns.preorderAllowed) { toast.error(`"${item.fileName}" için nozul stokta yok`); setIsSubmitting(false); return; } }
-        }
+      const result = await response.json().catch(() => null);
+      if (!response.ok || !result?.success) {
+        throw new Error(result?.error || 'Sipariş oluşturulamadı');
       }
 
-      if (hasStoreItems) {
-        for (const item of storeItems) {
-          const { data: product, error: prodErr } = await (supabase.from('store_products').select('price, track_stock, allow_backorder, stock_quantity') as any).eq('id', item.productId).single();
-          if (prodErr || !product) { toast.error(`"${item.name}" ürün bilgisi alınamadı`); setIsSubmitting(false); return; }
-          if (product.price !== item.unitPrice) { toast.error(`"${item.name}" fiyatı güncellenmiş. Sepetinizi kontrol edin.`); setIsSubmitting(false); return; }
-          if (product.track_stock && !product.allow_backorder && product.stock_quantity < item.quantity) { toast.error(`"${item.name}" için yeterli stok yok (kalan: ${product.stock_quantity})`); setIsSubmitting(false); return; }
-        }
-      }
-
-      if (hasServiceItems) {
-        const pricingEngine = new PricingEngine();
-        const updatedItems = [...cartItems];
-        for (let i = 0; i < cartItems.length; i++) {
-          const item = cartItems[i];
-          const machineType = item.technology === 'SLA' ? 'SLA_STANDARD' : 'FDM_STANDARD';
-          const result = await pricingEngine.calculatePrice({
-            fileId: item.fileId, volumeCm3: item.volumeCm3, materialId: item.materialId, machineType,
-            technology: item.technology || 'FDM', quantity: item.quantity, useGCodeAnalysis: false,
-            preorderDiscountPercent: item.preorderDiscountPercent ?? null, color: item.color,
-            nozzleSizeMm: item.nozzleSizeMm, timeMultiplier: item.customTimeMultiplier,
-          } as any);
-          if (!result.success) { toast.error(`"${item.fileName}" fiyatı hesaplanamadı`); setIsSubmitting(false); return; }
-          const correctedHours = typeof result.estimatedTime === 'number' ? result.estimatedTime : result.estimatedTime.correctedTimeHours;
-          updatedItems[i] = { ...item, unitPrice: result.breakdown.pricePerUnit, totalPrice: result.totalPrice, estimatedTime: correctedHours, deliveryDays: result.deliveryDays } as any;
-        }
-        setCartItems(updatedItems);
-      }
-
-      const now = new Date().toISOString();
-      const orderNumber = generateOrderNumber();
-      const addressData = { fullName: fullName.trim(), phone: phone.trim(), city: city.trim(), district: district.trim(), neighborhood: neighborhood.trim(), street: street.trim(), buildingNo: buildingNo.trim(), apartmentNo: apartmentNo.trim(), zipCode: zipCode.trim(), notes: deliveryNotes.trim() };
-
-      let estimatedDelivery: string | null = null;
-      if (hasServiceItems || hasStoreItems) { estimatedDelivery = await getEstimatedDeliveryDate(cartItems); }
-
-      if (hasStoreItems) { for (const item of storeItems) { const { error: stockErr } = await (supabase.rpc as any)('decrement_store_product_stock', { p_product_id: item.productId, p_quantity: item.quantity }); if (stockErr) throw new Error(`"${item.name}" için stok düşürülemedi`); } }
-      if (hasServiceItems) { for (const item of cartItems) { if (!item.isPreorder) await inventoryService.deductStock(item.materialId, item.color || 'Natural', item.quantity, item.nozzleSizeId); } }
-
-      const { data: order, error: orderError } = await (supabase.from('orders') as any).insert({
-        user_id: user.id, order_number: orderNumber, status: 'pending', subtotal, tax_amount: vat,
-        shipping_cost: computedShipping, total_amount: total, shipping_address: addressData,
-        billing_address: addressData, customer_notes: deliveryNotes.trim() || null,
-        payment_method: paymentMethod, payment_status: 'pending', estimated_delivery: estimatedDelivery,
-        created_at: now, updated_at: now,
-      }).select().single();
-
-      if (orderError || !order) throw new Error(orderError?.message || 'Sipariş oluşturulamadı');
-
-      if (hasServiceItems) {
-        const { error: itemsErr } = await (supabase.from('order_items') as any).insert(cartItems.map(item => ({
-          order_id: order.id, file_id: item.fileId, filename: item.fileName, material_id: item.materialId,
-          material_name: item.materialName, print_setting_id: item.printSettingId === 'custom' ? null : item.printSettingId, print_setting_name: item.printSettingName,
-          volume_cm3: item.volumeCm3, quantity: item.quantity, unit_price: item.unitPrice, subtotal: item.totalPrice,
-          color: item.color || 'Natural', estimated_print_hours: item.estimatedTime * item.quantity,
-          price_breakdown: item.priceBreakdown || null, is_preorder: item.isPreorder ?? false,
-          preorder_discount_percent: item.preorderDiscountPercent ?? null, nozzle_size_id: item.nozzleSizeId ?? null,
-          nozzle_size_mm: item.nozzleSizeMm ?? null, custom_layer_height: item.customLayerHeight ?? null,
-          custom_infill_percentage: item.customInfillPercentage ?? null, custom_time_multiplier: item.customTimeMultiplier ?? null,
-          custom_layer_thickness: item.customLayerThickness ?? null, custom_exposure_time: item.customExposureTime ?? null,
-          estimated_restock_days: item.estimatedRestockDays ?? null,
-        })));
-        if (itemsErr) { console.error('[Checkout] order_items insert error:', itemsErr, 'items:', JSON.stringify(cartItems.map(i => ({ fileId: i.fileId, fileName: i.fileName, materialId: i.materialId, nozzleSizeId: i.nozzleSizeId })))); throw new Error(`3D baskı ürünleri kaydedilemedi: ${itemsErr.message}`); }
-      }
-
-      if (hasStoreItems) {
-        const { data: products } = await (supabase.from('store_products').select('id, sku') as any).in('id', storeItems.map(i => i.productId));
-        const skuMap: Record<string, string | null> = {};
-        if (products) for (const p of products) skuMap[p.id] = p.sku;
-        const { error: storeErr } = await (supabase.from('store_order_items') as any).insert(storeItems.map(item => ({
-          order_id: order.id, product_id: item.productId, product_name: item.name, product_slug: item.slug,
-          sku: skuMap[item.productId] || null, unit_price: item.unitPrice, quantity: item.quantity, subtotal: item.totalPrice,
-        })));
-        if (storeErr) { console.error('[Checkout] store_order_items insert error:', storeErr); throw new Error(`Mağaza ürünleri kaydedilemedi: ${storeErr.message}`); }
-      }
+      const order = result.order as { id: string; orderNumber: string; total: number };
 
       // Save address if requested
       if (saveAddressCheck) {
@@ -233,7 +188,14 @@ export default function CheckoutPage() {
         if (paymentData.success && paymentData.paymentPageUrl) {
           await cartService.clearCart(); clearStoreCart();
           if (typeof window !== 'undefined') window.location.href = paymentData.paymentPageUrl;
-        } else { toast.error('Ödeme başlatılamadı', { id: 'payment-init' }); router.push('/dashboard/orders'); }
+        } else {
+          toast.error(paymentData.error || 'Ödeme başlatılamadı', { id: 'payment-init' });
+          // Ödeme başlatılamadı: siparişi iptal et ve rezerve edilen stoğu geri bırak.
+          try {
+            await fetch(`/api/v1/orders/${order.id}/cancel`, { method: 'POST' });
+          } catch { /* stok iadesi callback tarafında da idempotent */ }
+          router.push('/dashboard/orders');
+        }
       } else {
         await cartService.clearCart(); clearStoreCart();
         toast.success('Sipariş oluşturuldu');
@@ -270,11 +232,15 @@ export default function CheckoutPage() {
 
   const subtotal3D = cartItems.reduce((s, i) => s + i.totalPrice, 0);
   const subtotalStore = storeItems.reduce((s, i) => s + i.totalPrice, 0);
-  const subtotal = subtotal3D + subtotalStore;
-  const computedShipping = shippingFee > 0 && subtotal >= freeShippingMinAmount ? 0 : shippingFee;
-  const taxableBase = subtotal + computedShipping;
-  const vat = taxableBase * vatRate;
-  const total = taxableBase + vat;
+  const subtotalItems = subtotal3D + subtotalStore;
+  // Same pure function the server uses, so the preview cannot drift from the
+  // amount that is actually charged by a rounding difference.
+  const { subtotal, shipping: computedShipping, vat, total } = calculateOrderTotals({
+    itemsSubtotal: subtotalItems,
+    vatRate,
+    shippingFee,
+    freeShippingMinAmount,
+  });
   const totalItems = cartItems.reduce((s, i) => s + i.quantity, 0) + storeItems.reduce((s, i) => s + i.quantity, 0);
 
   if (isLoading) {

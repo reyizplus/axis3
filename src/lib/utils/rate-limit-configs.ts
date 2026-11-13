@@ -7,8 +7,9 @@
 import { Ratelimit } from '@upstash/ratelimit';
 import { Redis } from '@upstash/redis';
 
-// Skip rate limiting in development
-const isDevelopment = process.env.NODE_ENV === 'development';
+// Rate limiting must stay active in every environment. Upstash is used
+// whenever credentials are present; otherwise we fall back to per-instance
+// memory and warn loudly in production (limits are NOT global in that case).
 
 /**
  * In-memory rate limiter fallback for when Redis is unavailable
@@ -41,15 +42,26 @@ class InMemoryRateLimiter {
   }
 }
 
+let warnedAboutMemoryFallback = false;
+
+function warnMemoryFallbackOnce(): void {
+  if (warnedAboutMemoryFallback) return;
+  warnedAboutMemoryFallback = true;
+
+  if (process.env.NODE_ENV === 'production') {
+    console.warn(
+      '[RateLimit] UPSTASH_REDIS_REST_URL/TOKEN tanımlı değil. In-memory fallback kullanılıyor: ' +
+      'çok instance/serverless ortamda limitler GLOBAL DEĞİLDİR. Production için Upstash yapılandırın.'
+    );
+  }
+}
+
 /**
  * Create Redis instance
  */
 function createRedis(): Redis | null {
-  if (isDevelopment) {
-    return null;
-  }
-
   if (!process.env.UPSTASH_REDIS_REST_URL || !process.env.UPSTASH_REDIS_REST_TOKEN) {
+    warnMemoryFallbackOnce();
     return null;
   }
 

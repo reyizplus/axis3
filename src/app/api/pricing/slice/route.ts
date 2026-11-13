@@ -47,6 +47,14 @@ export async function POST(request: NextRequest) {
     if (result.success && result.gcodePath) {
       const analysis = await gcodeAnalyzer.analyze(result.gcodePath);
 
+      if (!analysis.success) {
+        await curaSlicer.cleanup(result.gcodePath);
+        return NextResponse.json(
+          { success: false, error: analysis.error || 'G-Code analizi başarısız' },
+          { status: 500 }
+        );
+      }
+
       await (supabase as any)
         .from('gcode_analysis_results')
         .insert({

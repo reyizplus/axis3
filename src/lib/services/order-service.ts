@@ -2,16 +2,18 @@
  * Order Service
  * Axis3 - Order Management Service
  *
+ * Client-side order *management* only. Order creation (pricing, stock
+ * reservation, ownership checks) lives on the server in
+ * `src/lib/services/order-creation-service.ts` and is reached through
+ * `POST /api/v1/orders/create`.
+ *
  * Features:
- * - Create orders from cart
  * - Get user orders
- * - Update order status
- * - Generate order numbers
- * - Order validation
+ * - Update order status (admin)
+ * - Cancel an unpaid order (delegates to the server so stock is released)
  */
 
 import { createClient } from '@/lib/supabase/client';
-import type { CartItem } from '@/lib/cart/types';
 import { mailService } from '@/lib/services/mail-service';
 
 // =====================================================
@@ -31,17 +33,6 @@ export type OrderStatus =
   | 'delivered'
   | 'cancelled'
   | 'refunded';
-
-export interface CreateOrderInput {
-  userId: string;
-  cartItems: CartItem[];
-  deliveryAddress: string;
-  deliveryNotes?: string;
-  subtotal: number;
-  vatAmount: number;
-  totalAmount: number;
-  paymentMethod: string; // Dynamic payment gateway type (e.g., 'iyzico', 'bank_transfer', etc.)
-}
 
 export interface OrderItem {
   id: string;
@@ -244,8 +235,11 @@ export class OrderService {
                         // Send status update email (non-blocking)
       if (completeOrder && oldStatus !== status) {
                 mailService.sendOrderStatusUpdate(completeOrder, oldStatus)
-          .then(() => {
-                      })
+          .then((result) => {
+            if (!result.success) {
+              console.warn('[OrderService.updateOrderStatus] Status email not sent:', result.error);
+            }
+          })
           .catch(error => {
             console.error('[OrderService.updateOrderStatus] ❌ Failed to send status update email:', error);
             // Don't fail the status update if email fails
@@ -261,12 +255,13 @@ export class OrderService {
   }
 
   /**
-   * Cancel order
-   * Only pending orders can be cancelled by users
+   * Cancel an order.
+   *
+   * Cancellation must run on the server: it is the only place that can release
+   * the stock reserved at checkout, and do it idempotently.
    */
   async cancelOrder(orderId: string, userId: string): Promise<{ success: boolean; error?: string }> {
     try {
-      // Check if order is pending
       const { data: order, error: fetchError } = await (this.supabase
         .from('orders') as any)
         .select('status')
@@ -278,13 +273,17 @@ export class OrderService {
         return { success: false, error: 'Sipariş bulunamadı' };
       }
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      if ((order as any).status !== 'pending') {
-        return { success: false, error: 'Sadece beklemedeki siparişler iptal edilebilir' };
+      const response = await fetch(`/api/v1/orders/${orderId}/cancel`, {
+        method: 'POST',
+      });
+
+      const result = await response.json().catch(() => null);
+
+      if (!response.ok || !result?.success) {
+        return { success: false, error: result?.error || 'Sipariş iptal edilemedi' };
       }
 
-      // Update status to cancelled
-      return await this.updateOrderStatus(orderId, 'cancelled', userId);
+      return { success: true };
     } catch (error) {
       console.error('Cancel order error:', error);
       return { success: false, error: 'Beklenmeyen bir hata oluştu' };

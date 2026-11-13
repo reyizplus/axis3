@@ -245,7 +245,7 @@ class InventoryService {
         .single()) as { data: { technology: string } | null; error: any };
       technology = (mat?.technology || 'FDM') as 'FDM' | 'SLA';
     }
-    const [invData, matData] = await Promise.all([
+    const [invData, matData, preorderSetting, preorderDefault] = await Promise.all([
       (this.supabase
         .from('inventory_items')
         .select('*') as any)
@@ -257,10 +257,22 @@ class InventoryService {
         .select('preorder_allowed, preorder_discount_percent')
         .eq('id', materialId)
         .single(),
+      (this.supabase
+        .from('global_settings') as any)
+        .select('value')
+        .eq('key', 'preorder_enabled')
+        .maybeSingle(),
+      (this.supabase
+        .from('global_settings') as any)
+        .select('value')
+        .eq('key', 'default_preorder_discount_percent')
+        .maybeSingle(),
     ]);
     const items = (invData.data as unknown as InventoryItem[]) || [];
     const materialPreorderAllowed = (matData.data as any)?.preorder_allowed ?? false;
     const materialPreorderDiscount = (matData.data as any)?.preorder_discount_percent ?? null;
+    const preorderGloballyEnabled = (preorderSetting.data as any)?.value?.value !== false;
+    const defaultPreorderDiscount = Number((preorderDefault.data as any)?.value?.value ?? 0);
 
     // Aggregate by color
     const colorMap = new Map<string, { hex: string | null; qty: number; canPreorder: boolean; preorderDiscount: number | null; restock: number }>();
@@ -276,7 +288,10 @@ class InventoryService {
           hex: item.hex_color,
           qty: item.quantity_on_hand,
           canPreorder: item.allow_preorder ?? materialPreorderAllowed,
-          preorderDiscount: item.preorder_discount_percent ?? materialPreorderDiscount,
+          preorderDiscount:
+            item.preorder_discount_percent ??
+            materialPreorderDiscount ??
+            (preorderGloballyEnabled ? defaultPreorderDiscount : null),
           restock: item.estimated_restock_days,
         });
       }
@@ -317,6 +332,13 @@ class InventoryService {
         canPreorder = materialPreorderAllowed;
         preorderDiscountPercent = materialPreorderDiscount;
       }
+    }
+
+    if (!preorderGloballyEnabled) {
+      canPreorder = false;
+      preorderDiscountPercent = null;
+    } else if (canPreorder && preorderDiscountPercent == null) {
+      preorderDiscountPercent = defaultPreorderDiscount;
     }
 
     return {

@@ -7,6 +7,28 @@ export class GCodeAnalyzer {
     try {
       const density = materialDensity || 1.24;
       const header = await this.parseHeader(gcodePath);
+
+      // Refuse to analyse simulated output: it would produce plausible-looking
+      // filament/time numbers that are not derived from the model at all.
+      if (Object.values(header).some((value) => typeof value === 'string' && value.includes('SIMULATED'))) {
+        return {
+          success: false,
+          filamentWeightGrams: 0,
+          supportWeightGrams: 0,
+          filamentLengthMm: 0,
+          actualPrintTimeSeconds: 0,
+          actualPrintTimeHours: 0,
+          totalLayerCount: 0,
+          minLayerHeightMm: 0,
+          maxLayerHeightMm: 0,
+          totalTravelDistanceMm: 0,
+          totalExtrusionDistanceMm: 0,
+          retractionCount: 0,
+          rawHeader: header,
+          error: 'Simulated G-Code cannot be analysed',
+        };
+      }
+
       const timeSeconds = this.extractTime(header);
       const filamentMm = this.extractFilamentLength(header);
       const layerCount = this.extractLayerCount(header);
@@ -88,6 +110,8 @@ export class GCodeAnalyzer {
 
       if (trimmed.startsWith(';TIME:')) {
         header.TIME = trimmed.replace(';TIME:', '').trim();
+      } else if (trimmed.includes('SIMULATED')) {
+        header.SIMULATED = 'true';
       } else if (trimmed.startsWith(';MATERIAL:')) {
         header.MATERIAL = trimmed.replace(';MATERIAL:', '').trim();
       } else if (trimmed.startsWith(';LAYER_COUNT:')) {

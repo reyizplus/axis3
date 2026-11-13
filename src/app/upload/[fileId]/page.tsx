@@ -23,7 +23,7 @@ import {
 } from 'lucide-react';
 import { Dialog3DViewer } from '@/components/ui/dialog-3d-viewer';
 import { createClient } from '@/lib/supabase/client';
-import { pricingEngine, type PricingResult } from '@/lib/pricing';
+import { pricingEngine, type PricingInput, type PricingResult } from '@/lib/pricing';
 import { cartService } from '@/lib/cart/cart-service';
 import { toast } from 'sonner';
 import Link from 'next/link';
@@ -112,27 +112,44 @@ export default function UploadDetailPage() {
     let preorderDiscount: number | null = null;
     let restockDays: number | undefined;
     try {
-      const materialAvail = await inventoryService.checkMaterialAvailability(selectedMaterial.id, undefined, selectedNozzle?.id, selectedMaterial.technology);
+      const materialAvail = await inventoryService.checkMaterialAvailability(
+        selectedMaterial.id,
+        undefined,
+        selectedNozzle?.id,
+        selectedMaterial.technology
+      );
 
-      if (inventoryColors.length > 0) {
-        const knownColor = inventoryColors.find(c => c.color === selectedColor);
-        if (knownColor && !knownColor.inStock) {
-          const colorAvail = await inventoryService.checkMaterialAvailability(selectedMaterial.id, selectedColor, selectedNozzle?.id, selectedMaterial.technology);
-          if (!colorAvail.available && !colorAvail.canPreorder) {
-            toast.error('Seçilen renk için stok bulunmuyor'); setCheckingInventory(false); return;
-          }
-          if (!colorAvail.available && colorAvail.canPreorder) {
-            const preorderEnabled = await inventoryService.isPreorderEnabled();
-            if (!preorderEnabled) { toast.error('Ön sipariş sistemi şu an kapalı'); setCheckingInventory(false); return; }
-            isPreorderItem = true;
-            preorderDiscount = selectedMaterial.preorderDiscountPercent;
-            restockDays = colorAvail.estimatedRestockDays ?? 14;
-          }
-        } else if (!knownColor && !materialAvail.available && !materialAvail.canPreorder) {
-          toast.error('Bu malzeme için stok bulunmuyor'); setCheckingInventory(false); return;
+      const knownColor = inventoryColors.find((c) => c.color === selectedColor);
+      const availability = knownColor
+        ? await inventoryService.checkMaterialAvailability(
+            selectedMaterial.id,
+            selectedColor,
+            selectedNozzle?.id,
+            selectedMaterial.technology
+          )
+        : materialAvail;
+
+      // Preorder is needed only when the requested quantity cannot be covered.
+      if (availability.stockCount < quantity) {
+        if (!availability.canPreorder) {
+          toast.error('Seçilen malzeme/renk için yeterli stok bulunmuyor');
+          setCheckingInventory(false);
+          return;
         }
-      } else if (!materialAvail.available && !materialAvail.canPreorder) {
-        toast.error('Bu malzeme için stok bulunmuyor'); setCheckingInventory(false); return;
+
+        const preorderEnabled = await inventoryService.isPreorderEnabled();
+        if (!preorderEnabled) {
+          toast.error('Ön sipariş sistemi şu an kapalı');
+          setCheckingInventory(false);
+          return;
+        }
+
+        isPreorderItem = true;
+        preorderDiscount =
+          availability.preorderDiscountPercent ??
+          materialAvail.preorderDiscountPercent ??
+          null;
+        restockDays = availability.estimatedRestockDays ?? 14;
       }
     } catch { toast.error('Stok kontrolü başarısız'); setCheckingInventory(false); return; }
     setCheckingInventory(false);
@@ -169,7 +186,9 @@ export default function UploadDetailPage() {
         estimatedRestockDays: restockDays,
         customLayerHeight: advancedMode && !isSla ? customLayerHeight : undefined,
         customInfillPercentage: advancedMode && !isSla ? customInfill : undefined,
-        customTimeMultiplier: advancedMode ? customSpeed : undefined,
+        // Stored as a time multiplier: the engine multiplies print time by it,
+        // so "2× faster" becomes 0.5.
+        customTimeMultiplier: advancedMode ? 1 / Math.max(0.1, customSpeed) : undefined,
         customLayerThickness: advancedMode && isSla ? customLayerThickness : undefined,
         customExposureTime: advancedMode && isSla ? customExposureTime : undefined,
         priceBreakdown: {
@@ -280,35 +299,72 @@ export default function UploadDetailPage() {
       setIsCalculating(true);
       setPricingResult(null);
       try {
-        const materialAvail = await inventoryService.checkMaterialAvailability(selectedMaterial.id, undefined, selectedNozzle?.id, selectedMaterial.technology);
-        setInventoryCheck({ available: materialAvail.available, canPreorder: materialAvail.canPreorder, stockCount: materialAvail.stockCount, estimatedRestockDays: materialAvail.estimatedRestockDays });
-        let isPreorder = false;
-        let preorderDiscountPercent: number | null = null;
-        if (inventoryColors.length > 0) {
-          const knownColor = inventoryColors.find(c => c.color === selectedColor);
-          if (knownColor && !knownColor.inStock) {
-            const colorAvail = await inventoryService.checkMaterialAvailability(selectedMaterial.id, selectedColor, selectedNozzle?.id, selectedMaterial.technology);
-            isPreorder = !colorAvail.available && colorAvail.canPreorder;
-            preorderDiscountPercent = isPreorder ? selectedMaterial.preorderDiscountPercent : null;
-          }
-        }
-        const machineType = selectedMaterial?.technology === 'SLA' ? 'SLA_STANDARD' : 'FDM_STANDARD';
-        const result: PricingResult = await pricingEngine.calculatePrice({
-          fileId: fileData.id, volumeCm3: fileData.volume_cm3, materialId: selectedMaterial.id,
-          machineType, technology: selectedMaterial?.technology || 'FDM', quantity, color: selectedColor,
-          nozzleSizeMm: selectedNozzle?.size_mm, useGCodeAnalysis: false, preorderDiscountPercent,
-          printSpeedModifier: selectedMaterial.printSpeedModifier, timeMultiplier: selectedQuality?.timeMultiplier,
-          infillPercentage: advancedMode && !isSla ? customInfill : selectedQuality?.infillPercentage ?? 20,
+        // Availability must be colour- and quantity-aware: the same rule the
+        // server applies when it creates the order.
+        const materialAvail = await inventoryService.checkMaterialAvailability(
+          selectedMaterial.id,
+          undefined,
+          selectedNozzle?.id,
+          selectedMaterial.technology
+        );
+        const knownColor = inventoryColors.find((c) => c.color === selectedColor);
+        const availability = knownColor
+          ? await inventoryService.checkMaterialAvailability(
+              selectedMaterial.id,
+              selectedColor,
+              selectedNozzle?.id,
+              selectedMaterial.technology
+            )
+          : materialAvail;
+
+        const hasEnoughStock = availability.stockCount >= quantity;
+        setInventoryCheck({
+          available: hasEnoughStock,
+          canPreorder: availability.canPreorder,
+          stockCount: availability.stockCount,
+          estimatedRestockDays: availability.estimatedRestockDays,
         });
+
+        // Preorder is only chosen when the requested quantity cannot be
+        // covered, and the discount always comes from the DB-backed
+        // availability result — never from the client's own state.
+        const isPreorder = !hasEnoughStock && availability.canPreorder;
+        const preorderDiscountPercent = isPreorder
+          ? availability.preorderDiscountPercent ?? null
+          : null;
+
+        const machineType = selectedMaterial.technology === 'SLA' ? 'SLA_STANDARD' : 'FDM_STANDARD';
+        // `customSpeed` is a user-facing speed multiplier (2 = twice as fast).
+        // The engine expects a time multiplier, which is its inverse.
+        const timeMultiplier = advancedMode
+          ? 1 / Math.max(0.1, customSpeed)
+          : selectedQuality?.timeMultiplier ?? 1;
+        const infillPercentage = isSla
+          ? 100
+          : advancedMode
+            ? customInfill
+            : selectedQuality?.infillPercentage ?? 20;
+
+        const priceInput: PricingInput = {
+          fileId: fileData.id,
+          volumeCm3: fileData.volume_cm3,
+          materialId: selectedMaterial.id,
+          machineType,
+          technology: selectedMaterial.technology || 'FDM',
+          quantity,
+          color: selectedColor,
+          nozzleSizeMm: selectedNozzle?.size_mm,
+          useGCodeAnalysis: true,
+          preorderDiscountPercent,
+          printSpeedModifier: selectedMaterial.printSpeedModifier,
+          timeMultiplier,
+          infillPercentage,
+        };
+
+        const result: PricingResult = await pricingEngine.calculatePrice(priceInput);
         setPricingResult(result);
         if (result.success) {
-          await pricingEngine.savePricingHistory(fileId, {
-            fileId: fileData.id, volumeCm3: fileData.volume_cm3, materialId: selectedMaterial.id,
-            machineType, technology: selectedMaterial?.technology || 'FDM', quantity, color: selectedColor,
-            nozzleSizeMm: selectedNozzle?.size_mm, useGCodeAnalysis: false, preorderDiscountPercent,
-            printSpeedModifier: selectedMaterial.printSpeedModifier, timeMultiplier: selectedQuality?.timeMultiplier,
-            infillPercentage: advancedMode && !isSla ? customInfill : selectedQuality?.infillPercentage ?? 20,
-          }, result);
+          await pricingEngine.savePricingHistory(fileId, priceInput, result);
         }
       } catch { toast.error('Fiyat hesaplanamadı'); }
       finally { setIsCalculating(false); }

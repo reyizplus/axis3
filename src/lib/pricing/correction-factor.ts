@@ -33,10 +33,23 @@ const DEFAULT_COEFFICIENTS: CorrectionCoefficients = {
 // =====================================================
 
 export class CorrectionFactor {
-  private supabase = createClient();
+  private client: any = null;
   private cachedCoefficients: CorrectionCoefficients | null = null;
   private cacheTimestamp = 0;
   private readonly CACHE_TTL = 10 * 60 * 1000;
+
+  /**
+   * @param client Optional Supabase client. Required for server-side usage;
+   *               falls back to the browser client when omitted.
+   */
+  constructor(client?: any) {
+    this.client = client ?? null;
+  }
+
+  private get supabase(): any {
+    if (!this.client) this.client = createClient();
+    return this.client;
+  }
 
   /**
    * Load coefficients from database or use defaults

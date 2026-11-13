@@ -10,6 +10,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { createServiceClient } from '@/lib/supabase/server';
 import { createContactRateLimiter } from '@/lib/utils/rate-limit-configs';
+import { mailService } from '@/lib/services/mail-service';
 
 // =====================================================
 // VALIDATION SCHEMA
@@ -128,8 +129,19 @@ export async function POST(request: NextRequest) {
       );
     }
 
-        // TODO: Send admin notification email
-    // This will be handled by feedback-service after implementation
+    // The message is stored in `feedback`. Also alert the shop owner, but do
+    // not fail the request if email delivery is unavailable — the submission
+    // itself already succeeded and is visible in the admin panel.
+    const mailResult = await mailService.sendContactNotification({
+      name,
+      email,
+      phone,
+      message,
+      pageUrl,
+    });
+    if (!mailResult.success) {
+      console.warn('[ContactAPI] Admin notification not sent:', mailResult.error, 'feedbackId:', (data as any)?.id);
+    }
 
     return NextResponse.json({
       success: true,
