@@ -149,6 +149,56 @@ describe('computeQuote - quantity and setup', () => {
   });
 });
 
+describe('computeQuote - destek işçiliği', () => {
+  it('destek kapalıysa destek ayıklama süresi ücretlendirilmez', () => {
+    const withSupport = quote();
+    const withoutSupport = quote({ supportEnabled: false });
+
+    expect(withSupport.breakdown.labor.supportRemovalMinutes).toBe(15);
+    expect(withoutSupport.breakdown.labor.supportRemovalMinutes).toBe(0);
+    expect(withoutSupport.breakdown.labor.totalMinutes).toBe(20);
+    expect(withoutSupport.breakdown.labor.subtotal).toBeLessThan(
+      withSupport.breakdown.labor.subtotal
+    );
+  });
+
+  it('ölçülen G-Code destek gramı 0 ise destek işçiliği alınmaz', () => {
+    const result = quote({
+      technology: 'FDM',
+      gcode: { totalGrams: 100, supportGrams: 0, printHours: 2 },
+    });
+
+    expect(result.breakdown.labor.supportRemovalMinutes).toBe(0);
+    expect(result.breakdown.labor.totalMinutes).toBe(20);
+  });
+
+  it('ölçülen destek gramı varsa destek işçiliği alınır', () => {
+    const result = quote({
+      technology: 'FDM',
+      gcode: FDM_SLICE,
+    });
+
+    expect(result.breakdown.labor.supportRemovalMinutes).toBe(15);
+  });
+
+  it('kullanıcı desteği kapattıysa G-Code destek gramı olsa da işçilik alınmaz', () => {
+    const result = quote({
+      technology: 'FDM',
+      gcode: FDM_SLICE,
+      supportEnabled: false,
+    });
+
+    expect(result.breakdown.labor.supportRemovalMinutes).toBe(0);
+  });
+
+  it('seçim verilmezse hacim tahmininde destek varsayılır', () => {
+    const result = quote();
+
+    expect(result.source).toBe('volume');
+    expect(result.breakdown.labor.supportRemovalMinutes).toBe(15);
+  });
+});
+
 describe('computeQuote - G-Code input', () => {
   it('uses the G-Code total and only breaks support out', () => {
     const result = quote({
@@ -161,6 +211,9 @@ describe('computeQuote - G-Code input', () => {
     expect(result.breakdown.material.totalGrams).toBeCloseTo(100, 2);
     expect(result.breakdown.material.supportGrams).toBeCloseTo(20, 2);
     expect(result.breakdown.material.filamentGrams).toBeCloseTo(80, 2);
+    // Fire kırılımı görünür olmalı: 100 g * %10 = 10 g.
+    expect(result.breakdown.material.wastePercentage).toBe(10);
+    expect(result.breakdown.material.wasteGrams).toBeCloseTo(10, 2);
     // 100 g * 0.7 TL/g * 1.10 fire
     expect(result.breakdown.material.subtotal).toBeCloseTo(77, 2);
   });

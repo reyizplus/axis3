@@ -364,8 +364,12 @@ export function PriceCalculationDetailDialog({
                       )}
                       {(breakdown.material as any)?.wastePercentage != null && (
                         <div className="flex justify-between">
-                          <span>Fire Payı</span>
-                          <span>%{(breakdown.material as any).wastePercentage}</span>
+                          <span>Fire (%{(breakdown.material as any).wastePercentage})</span>
+                          <span>
+                            {(breakdown.material as any).wasteGrams != null
+                              ? `${(breakdown.material as any).wasteGrams.toFixed(2)} g`
+                              : '-'}
+                          </span>
                         </div>
                       )}
                     </div>

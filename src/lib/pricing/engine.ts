@@ -11,6 +11,7 @@ import { CorrectionFactor } from './correction-factor';
 import { DeliveryCalculator } from '@/lib/utils/delivery-calculator';
 import { computeQuote, normalizeVatRate, PricingError } from './core';
 import type { QuantityDiscountTier } from './core';
+import { resolveMachineHourlyRate } from './machine-rate';
 import { getCachedAnalysis } from './server/analysis-cache';
 
 import type {
@@ -23,12 +24,6 @@ export type { PricingInput, PricingResult };
 
 const DEFAULT_WASTE_PERCENTAGE = 10.0;
 const DEFAULT_FILAMENT_BUFFER = 1.05;
-/**
- * Amortismanı saatlik ücrete çevirirken kullanılan aylık çalışma saati.
- * Yazıcı 8 saat × 20 iş günü çalışıyor varsayımı; tek yerde tutulur ki
- * makine maliyeti tahminî de olsa tekrar üretilebilir olsun.
- */
-const MACHINE_HOURS_PER_MONTH = 160;
 /** Türkiye standart KDV oranı; DB'de kayıt yoksa iki taraf aynı varsayılanı kullanır. */
 const DEFAULT_VAT_RATE = 0.2;
 
@@ -110,7 +105,7 @@ export class PricingEngine {
         await Promise.all([
           this.getMaterial(input.materialId),
           this.getMachineRate(input.machineType),
-          this.getLaborSettings(input.technology),
+          this.getLaborSettings(input.technology, input.supportEnabled !== false),
           this.getRiskPremium(input.technology),
           this.getElectricityRate(),
           this.getServiceFee(),
@@ -132,19 +127,19 @@ export class PricingEngine {
       if (!machine.configured) {
         warnOnce(
           `machine-rate-${input.machineType}`,
-          `${input.machineType} için makine saatlik ücreti tanımlı değil; varsayılan ${machine.hourlyRate} TL/saat kullanılıyor.`
+          `${input.machineType} için ne saatlik ücret ne de makine fiyatı tanımlı; makine maliyeti fiyata eklenmiyor. Admin > makine amortismanı ayarlarını doldurun.`
         );
       }
       if (machine.derived) {
         warnOnce(
           `machine-derived-${input.machineType}`,
-          `${input.machineType} saatlik ücreti 0 olduğu için amortismandan türetildi (${machine.hourlyRate.toFixed(2)} TL/saat). Admin > makine amortismanı ayarını kontrol edin.`
+          `${input.machineType} saatlik ücreti 0 olduğu için makine fiyatı + amortismandan türetildi (${machine.hourlyRate.toFixed(2)} TL/saat).`
         );
       }
       if (machine.hourlyRate === 0) {
         warnOnce(
           `machine-zero-${input.machineType}`,
-          `${input.machineType} makine saatlik ücreti 0; makine maliyeti fiyata eklenmiyor. Admin > fiyatlandırma ayarlarını kontrol edin.`
+          `${input.machineType} makine saatlik ücreti 0; makine maliyeti fiyata eklenmiyor.`
         );
       }
       if (!profit.configured) {
@@ -186,6 +181,7 @@ export class PricingEngine {
         infillPercentage: input.infillPercentage ?? (input.technology === 'SLA' ? 100 : 20),
         timeMultiplier: input.timeMultiplier ?? 1,
         gcode,
+        supportEnabled: input.supportEnabled !== false,
         preorderDiscountPercent: input.preorderDiscountPercent ?? null,
         labor,
         coefficients,
@@ -310,8 +306,8 @@ export class PricingEngine {
 
     return {
       totalGrams: cached.grams,
-      // PrusaSlicer toplam gramı verir; destek bu toplamın içindedir.
-      supportGrams: 0,
+      // Destek payı ölçülmüş G-Code'dan gelir; toplam gramın içindedir.
+      supportGrams: cached.supportGrams,
       printHours: cached.printSeconds / 3600,
     };
   }
@@ -360,41 +356,9 @@ export class PricingEngine {
       .eq('is_active', true)
       .maybeSingle();
 
-    if (data) {
-      const hourlyRate = Math.max(0, asNumber((data as any).hourly_rate, 0));
-      if (hourlyRate > 0) {
-        return { hourlyRate, configured: true, derived: false };
-      }
-
-      // Saatlik ücret 0 bırakılmış ama amortisman verisi doluysa fiyat sessizce
-      // makine maliyetsiz hesaplanıyordu (4 makinenin de hourly_rate değeri 0).
-      // Burada amortismandan türetiyoruz; varsayılan "5 TL/saat" uydurmaktansa
-      // DB'deki gerçek satın alma bedelini kullanmak doğru.
-      const purchaseCost = Math.max(0, asNumber((data as any).purchase_cost, 0));
-      const depreciationMonths = Math.max(0, asNumber((data as any).depreciation_months, 0));
-      const monthlyMaintenance = Math.max(0, asNumber((data as any).monthly_maintenance, 0));
-
-      if (depreciationMonths > 0 && purchaseCost > 0) {
-        const monthlyCost = purchaseCost / depreciationMonths + monthlyMaintenance;
-        const derivedRate = monthlyCost / MACHINE_HOURS_PER_MONTH;
-        if (derivedRate > 0) {
-          return { hourlyRate: derivedRate, configured: true, derived: true };
-        }
-      }
-    }
-
-    const defaultRates: Record<string, number> = {
-      FDM_STANDARD: 5,
-      FDM_INDUSTRIAL: 15,
-      SLA_STANDARD: 10,
-      SLA_INDUSTRIAL: 25,
-    };
-
-    return {
-      hourlyRate: defaultRates[machineType] ?? 5,
-      configured: false,
-      derived: false,
-    };
+    // Gömülü varsayılan fiyat yok: yalnızca DB'deki saatlik ücret veya
+    // adminin girdiği makine fiyatı + amortisman kullanılır.
+    return resolveMachineHourlyRate(data ?? null);
   }
 
   /**
@@ -423,7 +387,10 @@ export class PricingEngine {
     }
   }
 
-  private async getLaborSettings(technology: string): Promise<{
+  private async getLaborSettings(
+    technology: string,
+    supportEnabled: boolean
+  ): Promise<{
     filePrepMinutes: number;
     supportRemovalMinutes: number;
     postProcessingMinutes: number;
@@ -450,7 +417,9 @@ export class PricingEngine {
 
     return {
       filePrepMinutes: minutes.file_prep,
-      supportRemovalMinutes: minutes.support_removal,
+      // Destek kapalıyken destek ayıklama işçiliği ücretlendirilmez; süre DB'de
+      // dolu olsa bile yapılmayan iş fiyata girmemeli.
+      supportRemovalMinutes: supportEnabled ? minutes.support_removal : 0,
       postProcessingMinutes: minutes.post_processing,
       hourlyRate: await this.getLaborRate(),
     };
@@ -595,7 +564,7 @@ export class PricingEngine {
       success: false,
       totalPrice: 0,
       breakdown: {
-        material: { filamentGrams: 0, supportGrams: 0, totalGrams: 0, wastePercentage: 0, unitCostPerGram: 0, subtotal: 0 },
+        material: { filamentGrams: 0, supportGrams: 0, totalGrams: 0, wastePercentage: 0, wasteGrams: 0, unitCostPerGram: 0, subtotal: 0 },
         machineAmortization: { correctedPrintTimeHours: 0, hourlyRate: 0, subtotal: 0 },
         electricity: { printTimeHours: 0, rate: 0, subtotal: 0 },
         labor: { filePrepMinutes: 0, supportRemovalMinutes: 0, postProcessingMinutes: 0, totalMinutes: 0, hourlyRate: 0, subtotal: 0 },

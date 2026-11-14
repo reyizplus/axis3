@@ -111,6 +111,11 @@ export interface PricingInput {
   timeMultiplier?: number;
   /** Infill percentage from quality setting or custom mode (e.g. 20 for 20%) */
   infillPercentage?: number;
+  /**
+   * Kullanıcının destek yapısı seçimi. `false` ise dilimleme desteği kapatır
+   * ve destek ayıklama işçiliği fiyata girmez. Verilmezse `true` kabul edilir.
+   */
+  supportEnabled?: boolean;
 }
 
 export interface MaterialCost {
@@ -118,6 +123,8 @@ export interface MaterialCost {
   supportGrams: number;
   totalGrams: number;
   wastePercentage: number;
+  /** Fire payının gram karşılığı (fiyata materialSubtotal içinde girer). */
+  wasteGrams: number;
   unitCostPerGram: number;
   subtotal: number;
 }

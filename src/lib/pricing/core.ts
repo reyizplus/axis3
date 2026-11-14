@@ -96,6 +96,12 @@ export interface QuoteInput {
   infillPercentage: number;
   timeMultiplier: number;
   gcode?: GCodeConsumption | null;
+  /**
+   * Kullanıcı destek yapılarını istedi mi? `false` ise destek ayıklama işçiliği
+   * ücretlendirilmez. Verilmezse "destek var" kabul edilir (eski davranış), ama
+   * ölçülmüş G-Code'da hiç destek gramı yoksa yine de işçilik alınmaz.
+   */
+  supportEnabled?: boolean | null;
   preorderDiscountPercent?: number | null;
   labor: LaborMinutes;
   coefficients: CorrectionCoefficients;
@@ -345,7 +351,21 @@ export function computeQuote(input: QuoteInput): QuoteResult {
 
   // ---------- Labor (file prep once, the rest per part) ----------
   const filePrepMinutes = Math.max(0, finite(input.labor.filePrepMinutes, 0));
-  const supportRemovalPerPart = Math.max(0, finite(input.labor.supportRemovalMinutes, 0));
+
+  // Destek ayıklama yalnızca gerçekten destek varsa işçilik doğurur. Destek
+  // kapalıysa ya da ölçülen G-Code'da destek gramı 0 ise bu süre fiyata
+  // eklenmiyordu; "destek yok ama 15 dk destek temizliği" sessiz bir fazla
+  // ücretlendirmeydi. Hacim tahmininde (SLA) destek varsayılır.
+  const supportPresent =
+    input.supportEnabled === false
+      ? false
+      : estimate.source === 'gcode'
+        ? estimate.supportGrams > 0
+        : true;
+
+  const supportRemovalPerPart = supportPresent
+    ? Math.max(0, finite(input.labor.supportRemovalMinutes, 0))
+    : 0;
   const postProcessingPerPart = Math.max(0, finite(input.labor.postProcessingMinutes, 0));
 
   const laborMinutesTotal =
@@ -432,6 +452,10 @@ export function computeQuote(input: QuoteInput): QuoteResult {
       supportGrams: roundMoney(estimate.supportGrams * quantity, 2),
       totalGrams: roundMoney(estimate.totalGrams * quantity, 2),
       wastePercentage,
+      wasteGrams: roundMoney(
+        (estimate.totalGrams * quantity * wastePercentage) / 100,
+        2
+      ),
       unitCostPerGram: input.costPerGram,
       subtotal: materialSubtotal,
     },

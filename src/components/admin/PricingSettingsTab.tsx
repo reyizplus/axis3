@@ -10,6 +10,7 @@ import { Separator } from '@/components/ui/separator';
 import { DollarSign, Zap, Briefcase, TrendingUp, Printer, Save, Loader2, Percent, Plus, Trash2, Cpu, ShieldCheck, Clock, Settings2 } from 'lucide-react';
 import { adminServiceClient, type GlobalSetting } from '@/lib/services/admin-service-client';
 import { resetVatRateCache } from '@/lib/services/settings-service';
+import { resolveMachineHourlyRate } from '@/lib/pricing/machine-rate';
 import { toast } from 'sonner';
 
 export function PricingSettingsTab() {
@@ -18,6 +19,12 @@ export function PricingSettingsTab() {
   const [saving, setSaving] = useState(false);
   const [editedValues, setEditedValues] = useState<Record<string, any>>({});
   const [machineRates, setMachineRates] = useState<any[]>([]);
+  /**
+   * Makine alanları yazarken her tuşta DB'ye yazılmaz: 15000 gibi bir fiyatta
+   * her tuş ayrı update tetikleyip yarışa giriyordu. Değer odak kaybında
+   * (blur) kaydedilir; bu sırada kutu yerel taslağı gösterir.
+   */
+  const [machineDrafts, setMachineDrafts] = useState<Record<string, Record<string, string>>>({});
   const [riskPremiums, setRiskPremiums] = useState<any[]>([]);
   const [laborTimes, setLaborTimes] = useState<any[]>([]);
   const [coefficients, setCoefficients] = useState<any[]>([]);
@@ -73,6 +80,25 @@ export function PricingSettingsTab() {
       await adminServiceClient.updateMachineAmortization(id, { [field]: parseFloat(value) || 0 });
       setMachineRates(await adminServiceClient.getMachineAmortization());
     } catch { toast.error('Makine amortismanı güncellenemedi'); }
+    finally {
+      setMachineDrafts(prev => {
+        const next = { ...prev };
+        if (next[id]) {
+          delete next[id][field];
+          if (Object.keys(next[id]).length === 0) delete next[id];
+        }
+        return next;
+      });
+    }
+  }
+
+  function setMachineDraft(id: string, field: string, value: string) {
+    setMachineDrafts(prev => ({ ...prev, [id]: { ...prev[id], [field]: value } }));
+  }
+
+  function machineValue(machine: any, field: 'purchase_cost' | 'hourly_rate'): string {
+    const draft = machineDrafts[machine.id]?.[field];
+    return draft ?? String(machine[field] ?? 0);
   }
 
   async function handleSaveRisk(id: string, value: string) {
@@ -350,7 +376,7 @@ export function PricingSettingsTab() {
             </div>
             <div className="min-w-0 flex-1">
               <CardTitle className="text-sm sm:text-base truncate">Makine Amortisman Oranları</CardTitle>
-              <CardDescription className="text-xs">Her makine tipi için saatlik amortisman ücreti</CardDescription>
+              <CardDescription className="text-xs">Makine fiyatı ve saatlik amortisman ücreti</CardDescription>
               <Badge variant="secondary" className="mt-1 text-[10px] h-4 px-1">v2 pricing</Badge>
             </div>
           </div>
@@ -358,18 +384,50 @@ export function PricingSettingsTab() {
         <CardContent className="px-4 sm:px-6 pb-4 sm:pb-6">
           {v2Loading ? <div className="flex justify-center py-4"><Loader2 className="h-5 w-5 animate-spin" /></div> : (
             <div className="space-y-2">
-              {machineRates.map((m: any) => (
-                <div key={m.id} className="flex items-center gap-2 sm:gap-4 p-3 rounded-xl border border-border/40 bg-muted/20">
-                  <div className="min-w-0 flex-1">
-                    <div className="text-xs sm:text-sm font-medium truncate">{machineTypeLabels[m.machine_type] || m.machine_type}</div>
-                    <div className="text-[10px] text-muted-foreground truncate">{m.machine_type}</div>
+              {machineRates.map((m: any) => {
+                const resolved = resolveMachineHourlyRate(m);
+                return (
+                  <div key={m.id} className="p-3 rounded-xl border border-border/40 bg-muted/20">
+                    <div className="min-w-0">
+                      <div className="text-xs sm:text-sm font-medium truncate">{machineTypeLabels[m.machine_type] || m.machine_type}</div>
+                      <div className="text-[10px] text-muted-foreground truncate">{m.machine_type}</div>
+                    </div>
+                    <div className="mt-2 grid grid-cols-2 gap-2 sm:gap-4">
+                      <div className="min-w-0">
+                        <Label className="text-[10px] text-muted-foreground">Makine Fiyatı (₺)</Label>
+                        <Input
+                          type="number"
+                          step="500"
+                          min="0"
+                          value={machineValue(m, 'purchase_cost')}
+                          onChange={(e) => setMachineDraft(m.id, 'purchase_cost', e.target.value)}
+                          onBlur={(e) => handleSaveMachine(m.id, 'purchase_cost', e.target.value)}
+                          className="text-xs sm:text-sm font-semibold text-right h-9"
+                        />
+                      </div>
+                      <div className="min-w-0">
+                        <Label className="text-[10px] text-muted-foreground">Saatlik Ücret (₺/saat)</Label>
+                        <Input
+                          type="number"
+                          step="0.5"
+                          min="0"
+                          value={machineValue(m, 'hourly_rate')}
+                          onChange={(e) => setMachineDraft(m.id, 'hourly_rate', e.target.value)}
+                          onBlur={(e) => handleSaveMachine(m.id, 'hourly_rate', e.target.value)}
+                          className="text-xs sm:text-sm font-semibold text-right h-9"
+                        />
+                      </div>
+                    </div>
+                    <p className="mt-1.5 text-[10px] text-muted-foreground">
+                      {resolved.derived
+                        ? `Saatlik ücret 0 olduğu için makine fiyatı + bakımdan türetiliyor: ₺${resolved.hourlyRate.toFixed(2)}/saat`
+                        : resolved.hourlyRate > 0
+                          ? 'Saatlik ücret girildiği için makine fiyatı fiyata ayrıca yansımaz.'
+                          : 'Makine fiyatı girilmediği için makine maliyeti fiyata eklenmiyor.'}
+                    </p>
                   </div>
-                  <div className="w-20 sm:w-32 shrink-0">
-                    <Input type="number" step="0.5" value={m.hourly_rate} onChange={(e) => handleSaveMachine(m.id, 'hourly_rate', e.target.value)} className="text-xs sm:text-sm font-semibold text-right h-9" />
-                  </div>
-                  <span className="text-[10px] text-muted-foreground shrink-0 w-6">₺/s</span>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </CardContent>
