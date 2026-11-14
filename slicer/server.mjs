@@ -6,7 +6,7 @@
  * başlıktan gram / süre / katman sayısını döner.
  *
  *   GET  /health → { ok, engine, queueDepth, busy }
- *   POST /slice  → { ok, grams, printSeconds, layerCount, filamentMm, durationMs, engine }
+ *   POST /slice  → { ok, grams, supportGrams, printSeconds, layerCount, filamentMm, durationMs, engine }
  *
  * Hiçbir adımda uydurma sayı üretilmez; ölçülemeyen değer hata olarak döner.
  */
@@ -161,7 +161,10 @@ function buildArgs(profile, modelPath, outPath) {
     '--fill-density',
     `${formatNumber(profile.infillPercentage)}%`,
     '--fill-pattern',
-    'grid',
+    // PrusaSlicer 2.5 grid desenini %100 dolulukta reddediyor (422: "The
+    // selected fill pattern is not supposed to work at 100% density").
+    // %100'de tamamen dolu bir desen kullanılır.
+    profile.infillPercentage >= 100 ? 'rectilinear' : 'grid',
     '--perimeter-speed',
     formatNumber(printSpeed),
     '--infill-speed',
@@ -493,6 +496,7 @@ async function handleSlice(req, res) {
     sendJson(res, 200, {
       ok: true,
       grams: summary.grams,
+      supportGrams: summary.supportGrams,
       printSeconds: summary.printSeconds,
       layerCount: summary.layerCount,
       filamentMm: summary.filamentMm,

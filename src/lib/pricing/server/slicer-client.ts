@@ -21,6 +21,11 @@ import type { SliceProfileV1 } from './slicer-profile';
 export interface SliceStats {
   /** Toplam filaman (destek dahil), gram. */
   grams: number;
+  /**
+   * Destek payı, gram. Yalnızca kırılım içindir; toplam gramın içindedir ve
+   * fiyat toplam üzerinden hesaplanır. Eski dilimleyici göndermezse 0 olur.
+   */
+  supportGrams: number;
   /** Gerçek baskı süresi, saniye. */
   printSeconds: number;
   /** Katman sayısı (>= 1). */
@@ -200,6 +205,15 @@ function toSliceStats(
     );
   }
 
+  // Destek gramı yalnızca kırılımdır; 0 geçerlidir (destek kapalı olabilir).
+  // Toplamdan büyük olamaz: yanlış bir oran fiyat kırılımını yanıltmasın.
+  const supportGrams =
+    typeof record.supportGrams === 'number' &&
+    Number.isFinite(record.supportGrams) &&
+    record.supportGrams >= 0
+      ? Math.min(record.supportGrams, grams)
+      : 0;
+
   // Filaman uzunluğu fiyata girmez; eksikse 0 bilgilendirme değeri taşınır.
   const filamentMm =
     typeof record.filamentMm === 'number' &&
@@ -220,7 +234,7 @@ function toSliceStats(
       ? record.engine
       : profile.engine;
 
-  return { grams, printSeconds, layerCount, filamentMm, durationMs, engine };
+  return { grams, supportGrams, printSeconds, layerCount, filamentMm, durationMs, engine };
 }
 
 /**

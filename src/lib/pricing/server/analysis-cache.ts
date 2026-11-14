@@ -14,6 +14,8 @@
 /** Önbellekten dönen, fiyatlamaya hazır analiz. */
 export interface CachedAnalysis {
   grams: number;
+  /** Destek payı (gram); toplam gramın içindedir, fiyatı etkilemez. */
+  supportGrams: number;
   printSeconds: number;
   layerCount: number;
   filamentMm: number;
@@ -24,6 +26,8 @@ export interface CachedAnalysis {
 /** `sliceModel()` sonucunun bu katmanın ihtiyaç duyduğu alt kümesi. */
 export interface AnalysisStats {
   grams: number;
+  /** Destek payı (gram). Kırılım içindir; fiyat toplam gramdan hesaplanır. */
+  supportGrams?: number | null;
   printSeconds: number;
   layerCount: number;
   filamentMm?: number;
@@ -60,6 +64,7 @@ export interface AnalysisCacheClient {
 
 const ANALYSIS_COLUMNS = [
   'filament_weight_grams',
+  'support_weight_grams',
   'actual_print_time_seconds',
   'actual_print_time_hours',
   'total_layer_count',
@@ -132,6 +137,7 @@ export async function getCachedAnalysis(
 
   return {
     grams: roundTo(grams, 4),
+    supportGrams: roundTo(Math.min(grams, Math.max(0, toNumber(row.support_weight_grams))), 4),
     printSeconds: Math.round(printSeconds),
     layerCount: Math.max(1, Math.round(toNumber(row.total_layer_count))),
     filamentMm: roundTo(toNumber(row.filament_length_mm), 2),
@@ -165,9 +171,12 @@ export async function saveAnalysis(
     engine: stats.engine ?? null,
     duration_ms: stats.durationMs != null ? Math.round(stats.durationMs) : null,
     filament_weight_grams: roundTo(stats.grams, 4),
-    // PrusaSlicer toplam gramı verir; destek bu toplamın içindedir.
-    // Kırılımda ayrı gösterilmediği için 0 yazılır (fiyatı etkilemez).
-    support_weight_grams: 0,
+    // Destek, toplam gramın içindedir; burada yalnızca kırılım için saklanır.
+    // Ölçülemediyse 0 yazılır (fiyat toplam gramdan hesaplandığı için sapmaz).
+    support_weight_grams:
+      stats.supportGrams != null && Number.isFinite(stats.supportGrams)
+        ? roundTo(Math.min(stats.grams, Math.max(0, stats.supportGrams)), 4)
+        : 0,
     filament_length_mm: stats.filamentMm != null ? roundTo(stats.filamentMm, 2) : null,
     actual_print_time_seconds: Math.round(stats.printSeconds),
     actual_print_time_hours: roundTo(stats.printSeconds / 3600, 2),

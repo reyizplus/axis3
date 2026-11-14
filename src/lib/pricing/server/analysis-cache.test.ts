@@ -56,6 +56,7 @@ describe('getCachedAnalysis', () => {
     const { client, calls } = createFakeClient({
       data: {
         filament_weight_grams: '4.4900',
+        support_weight_grams: '1.5000',
         actual_print_time_seconds: 1151,
         actual_print_time_hours: '0.32',
         total_layer_count: 100,
@@ -70,6 +71,7 @@ describe('getCachedAnalysis', () => {
 
     expect(result).toEqual({
       grams: 4.49,
+      supportGrams: 1.5,
       printSeconds: 1151,
       layerCount: 100,
       filamentMm: 1504.88,
@@ -81,6 +83,23 @@ describe('getCachedAnalysis', () => {
       ['file_id', FILE_ID],
       ['profile_hash', HASH],
     ]);
+  });
+
+  it('destek gramını toplam gramla sınırlar', async () => {
+    const { client } = createFakeClient({
+      data: {
+        filament_weight_grams: 10,
+        support_weight_grams: 25,
+        actual_print_time_seconds: 900,
+        total_layer_count: 10,
+        filament_length_mm: 3400,
+        raw_header: null,
+        profile_hash: HASH,
+      },
+    });
+
+    const result = await getCachedAnalysis(client, FILE_ID, HASH);
+    expect(result?.supportGrams).toBe(10);
   });
 
   it('hash boşsa sorgu bile yapmaz', async () => {
@@ -168,6 +187,7 @@ describe('saveAnalysis', () => {
       profileJson: { v: 1, layerHeight: 0.2 },
       stats: {
         grams: 4.4901,
+        supportGrams: 1.234567,
         printSeconds: 1151,
         layerCount: 100,
         filamentMm: 1504.879,
@@ -182,7 +202,7 @@ describe('saveAnalysis', () => {
       profile_hash: HASH,
       profile_json: { v: 1, layerHeight: 0.2 },
       filament_weight_grams: 4.4901,
-      support_weight_grams: 0,
+      support_weight_grams: 1.2346,
       actual_print_time_seconds: 1151,
       actual_print_time_hours: 0.32,
       total_layer_count: 100,
@@ -193,6 +213,19 @@ describe('saveAnalysis', () => {
       source: 'prusaslicer',
       profileHash: HASH,
     });
+  });
+
+  it('destek gramı toplamı aşarsa toplamla sınırlar', async () => {
+    const { client, calls } = createFakeClient();
+
+    await saveAnalysis(client, {
+      fileId: FILE_ID,
+      profileHash: HASH,
+      profileJson: {},
+      stats: { grams: 10, supportGrams: 25, printSeconds: 100, layerCount: 5 },
+    });
+
+    expect(calls.upsert?.row.support_weight_grams).toBe(10);
   });
 
   it('geçersiz dilimleme sonucunu yazmaz', async () => {

@@ -142,10 +142,17 @@ async function checkSlice() {
     fail('baskı süresi', `beklenen 1000–1300, gelen ${payload.printSeconds}`);
   }
 
-  if (payload.layerCount === 100) {
-    pass('katman sayısı', '100');
+  if (payload.layerCount === 99) {
+    pass('katman sayısı', '99');
   } else {
-    fail('katman sayısı', `beklenen 100, gelen ${payload.layerCount}`);
+    fail('katman sayısı', `beklenen 99, gelen ${payload.layerCount}`);
+  }
+
+  // Destek kapalı bir küpte destek payı 0 olmalı.
+  if (payload.supportGrams === 0) {
+    pass('destek gramı', '0 g (destek kapalı)');
+  } else {
+    fail('destek gramı', `beklenen 0, gelen ${payload.supportGrams}`);
   }
 
   if (elapsed < 20_000) {

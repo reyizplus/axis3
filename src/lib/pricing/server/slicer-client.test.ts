@@ -37,6 +37,7 @@ const PROFILE: SliceProfileV1 = (() => {
 const OK_BODY = {
   ok: true,
   grams: 4.49,
+  supportGrams: 0.75,
   printSeconds: 1151,
   layerCount: 100,
   filamentMm: 1450.2,
@@ -104,6 +105,7 @@ describe('sliceModel - mutlu yol', () => {
 
     expect(stats).toEqual({
       grams: 4.49,
+      supportGrams: 0.75,
       printSeconds: 1151,
       layerCount: 100,
       filamentMm: 1450.2,
@@ -144,6 +146,18 @@ describe('sliceModel - mutlu yol', () => {
     expect(stats.grams).toBe(4.49);
     expect(stats.durationMs).toBeGreaterThanOrEqual(0);
     expect(Number.isFinite(stats.durationMs)).toBe(true);
+  });
+
+  it('destek gramı yoksa 0, toplamdan büyükse toplamla sınırlanır', async () => {
+    fetchMock().mockResolvedValueOnce(
+      jsonResponse({ ...OK_BODY, supportGrams: undefined })
+    );
+    const withoutSupport = await sliceModel(STL, 'cube.stl', PROFILE);
+    expect(withoutSupport.supportGrams).toBe(0);
+
+    fetchMock().mockResolvedValueOnce(jsonResponse({ ...OK_BODY, supportGrams: 99 }));
+    const clamped = await sliceModel(STL, 'cube.stl', PROFILE);
+    expect(clamped.supportGrams).toBe(4.49);
   });
 });
 
