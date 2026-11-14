@@ -5,9 +5,11 @@
  *
  * Bambu Studio / PrusaSlicer önizlemesinin web karşılığı: gerçek dilimleyici
  * çıktısındaki her çizgi bir G0/G1 hareketidir. Dış/iç duvarlar, dolgu, üst
- * yüzey, köprü, **destek gövdesi ve destek arayüzü** ayrı renklerde gösterilir;
- * katman kaydırıcısı, oynatma, tür filtreleri, hız renklendirmesi ve dilimleme
- * ayarları paneli vardır.
+ * yüzey, köprü, **destek gövdesi ve destek arayüzü** ayrı renklerde gösterilir.
+ *
+ * Görünürlük filtreleri ve renk modu **dışarıdan** verilir: düğmeler ve
+ * listeler artık modelin üzerine açılan panelde değil, yan sütunda durur.
+ * Sahnenin üstünde yalnızca kamera düğmesi ve katman kaydırıcısı kalır.
  *
  * Çizim tek bir `LineSegments` çağrısıdır. Konumlar Int16 normalize olarak
  * saklanır ve vertex shader'da gerçek mm'ye çözülür; katman/tür filtresi de
@@ -15,78 +17,28 @@
  * kalır.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
-import {
-  Camera,
-  ChevronLeft,
-  ChevronRight,
-  Eye,
-  EyeOff,
-  Layers,
-  Pause,
-  Play,
-  Settings2,
-  Timer,
-  Weight,
-} from 'lucide-react';
+import { Camera, ChevronLeft, ChevronRight, Pause, Play } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
+import { toolpathColor } from '@/lib/utils/color';
+import { useIsDarkMode } from '@/hooks/use-is-dark';
+import { formatDuration, formatGrams, type ToolpathColorMode } from '@/lib/preview/display';
 import type { GcodePreviewData } from '@/lib/preview/format';
 
 interface GcodePreviewViewerProps {
   data: GcodePreviewData;
+  /** Tür başına görünürlük; uzunluğu `data.meta.types` ile aynı olmalı. */
+  visibleTypes: boolean[];
+  colorMode: ToolpathColorMode;
   className?: string;
 }
 
 /** Tür sayısı shader'daki sabit dizi uzunluğuyla aynı olmalı. */
 const MAX_TYPES = 16;
-
-const CONFIG_LABELS: Record<string, string> = {
-  layer_height: 'Katman yüksekliği',
-  first_layer_height: 'İlk katman',
-  perimeters: 'Duvar sayısı',
-  top_solid_layers: 'Üst katı katman',
-  bottom_solid_layers: 'Alt katı katman',
-  fill_density: 'Doluluk',
-  fill_pattern: 'Dolgu deseni',
-  nozzle_diameter: 'Nozul çapı',
-  filament_type: 'Filament',
-  filament_density: 'Yoğunluk',
-  temperature: 'Nozul sıcaklığı',
-  first_layer_temperature: 'İlk katman sıcaklığı',
-  bed_temperature: 'Tabla sıcaklığı',
-  first_layer_bed_temperature: 'İlk katman tabla',
-  perimeter_speed: 'Duvar hızı',
-  external_perimeter_speed: 'Dış duvar hızı',
-  infill_speed: 'Dolgu hızı',
-  solid_infill_speed: 'Katı dolgu hızı',
-  travel_speed: 'Seyahat hızı',
-  max_volumetric_speed: 'Maks. hacimsel hız',
-  support_material: 'Destek',
-  support_material_angle: 'Destek açısı',
-  support_material_threshold: 'Destek eşiği',
-  printer_model: 'Yazıcı',
-  printer_variant: 'Varyant',
-};
-
-function formatDuration(seconds: number): string {
-  if (!Number.isFinite(seconds) || seconds <= 0) return '—';
-  const total = Math.round(seconds);
-  const hours = Math.floor(total / 3600);
-  const minutes = Math.floor((total % 3600) / 60);
-  const secs = total % 60;
-
-  if (hours > 0) return `${hours} sa ${minutes} dk`;
-  if (minutes > 0) return `${minutes} dk ${secs} sn`;
-  return `${secs} sn`;
-}
-
-function formatGrams(value: number): string {
-  return `${value.toFixed(2)} g`;
-}
 
 /** `#rrggbb` → [0..1] sRGB. Renk yönetimi bilinçli olarak kapalı. */
 function hexToRgb(hex: string): [number, number, number] {
@@ -98,6 +50,25 @@ function hexToRgb(hex: string): [number, number, number] {
     ((value >> 8) & 0xff) / 255,
     (value & 0xff) / 255,
   ];
+}
+
+/** Temaya göre sahne renkleri. Koyu tema siyah zemin, açık tema beyaz zemin. */
+function stageColors(isDark: boolean) {
+  return isDark
+    ? {
+        clear: 0x0a0e13,
+        bed: 0x1b2632,
+        gridMajor: 0x6d8aa8,
+        gridMinor: 0x3c5166,
+        border: 0x9db6cc,
+      }
+    : {
+        clear: 0xf1f4f8,
+        bed: 0xe3e9f0,
+        gridMajor: 0x9aa8b8,
+        gridMinor: 0xc2ccd8,
+        border: 0x7c8b9c,
+      };
 }
 
 const VERTEX_SHADER = /* glsl */ `
@@ -169,24 +140,38 @@ const FRAGMENT_SHADER = /* glsl */ `
   }
 `;
 
-export function GcodePreviewViewer({ data, className }: GcodePreviewViewerProps) {
+export function GcodePreviewViewer({
+  data,
+  visibleTypes,
+  colorMode,
+  className,
+}: GcodePreviewViewerProps) {
   const mountRef = useRef<HTMLDivElement | null>(null);
+  const sceneRef = useRef<THREE.Scene | null>(null);
+  const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
   const materialRef = useRef<THREE.ShaderMaterial | null>(null);
+  const paletteRef = useRef<THREE.DataTexture | null>(null);
+  const bedRef = useRef<THREE.Mesh | null>(null);
+  const borderRef = useRef<THREE.LineLoop | null>(null);
+  const gridRef = useRef<THREE.GridHelper | null>(null);
+  const bedSpecRef = useRef<{ size: number; divisions: number; x: number; y: number } | null>(null);
   const controlsRef = useRef<OrbitControls | null>(null);
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
   const frameRef = useRef<(() => void) | null>(null);
+
+  const isDark = useIsDarkMode();
 
   const totalLayers = data.meta.layers.length;
   /** Oynatma döngüsü katman değerini render beklemeden okur. */
   const layerRef = useRef(totalLayers);
 
-  const [visibleTypes, setVisibleTypes] = useState<boolean[]>(() =>
-    data.meta.types.map((type) => type.visible)
-  );
-  const [colorMode, setColorMode] = useState<'type' | 'speed'>('type');
   const [layer, setLayer] = useState(totalLayers);
   const [playing, setPlaying] = useState(false);
-  const [panel, setPanel] = useState<'types' | 'config' | null>('types');
+
+  const dimensions = useMemo(() => {
+    const { min, max } = data.meta.printBounds;
+    return [max[0] - min[0], max[1] - min[1], max[2] - min[2]] as const;
+  }, [data]);
 
   const maxSpeed = useMemo(() => {
     let max = 0;
@@ -198,11 +183,6 @@ export function GcodePreviewViewer({ data, className }: GcodePreviewViewerProps)
   }, [data]);
 
   const currentLayer = layer >= 1 ? data.meta.layers[Math.min(totalLayers - 1, layer - 1)] : null;
-
-  const dimensions = useMemo(() => {
-    const { min, max } = data.meta.printBounds;
-    return [max[0] - min[0], max[1] - min[1], max[2] - min[2]] as const;
-  }, [data]);
 
   /* ---------------------------------------------------------------------- */
   /* Sahne                                                                   */
@@ -255,10 +235,11 @@ export function GcodePreviewViewer({ data, className }: GcodePreviewViewerProps)
     paletteTexture.magFilter = THREE.NearestFilter;
     paletteTexture.minFilter = THREE.NearestFilter;
     paletteTexture.needsUpdate = true;
+    paletteRef.current = paletteTexture;
 
     const visibility = new Float32Array(MAX_TYPES);
     for (let i = 0; i < MAX_TYPES; i += 1) {
-      visibility[i] = i < typeCount && meta.types[i].visible ? 1 : 0;
+      visibility[i] = i < typeCount && visibleTypes[i] ? 1 : 0;
     }
 
     const material = new THREE.ShaderMaterial({
@@ -271,8 +252,8 @@ export function GcodePreviewViewer({ data, className }: GcodePreviewViewerProps)
         uTypeVisible: { value: visibility },
         uTypeCount: { value: typeCount },
         uPalette: { value: paletteTexture },
-        uMaxSpeed: { value: maxSpeed },
-        uColorMode: { value: 0 },
+        uMaxSpeed: { value: 1 },
+        uColorMode: { value: colorMode === 'speed' ? 1 : 0 },
         uAlpha: { value: 1 },
       },
     });
@@ -283,6 +264,8 @@ export function GcodePreviewViewer({ data, className }: GcodePreviewViewerProps)
     segments.frustumCulled = false;
 
     const scene = new THREE.Scene();
+    sceneRef.current = scene;
+
     const bounds = meta.printBounds;
     const center = new THREE.Vector3(
       (bounds.min[0] + bounds.max[0]) / 2,
@@ -296,24 +279,27 @@ export function GcodePreviewViewer({ data, className }: GcodePreviewViewerProps)
 
     scene.add(segments);
 
-    // Tabla: koyu arka plandan ayrışan bir yüzey + ızgara. Izgara çizgileri
-    // koyu kalırsa tabla kaybolur; bu yüzden yüzey ve çizgiler bilinçli olarak
-    // arka plandan daha açık tonlarda.
+    // Tabla: her iki temada da ayrışan bir yüzey + ızgara.
     const bedSize = Math.max(220, width * 1.4, depth * 1.4);
     const divisions = Math.max(10, Math.round(bedSize / 20));
+    bedSpecRef.current = { size: bedSize, divisions, x: center.x, y: center.y };
+
+    const colors = stageColors(isDark);
 
     const bedSurface = new THREE.Mesh(
       new THREE.PlaneGeometry(bedSize, bedSize),
-      new THREE.MeshBasicMaterial({ color: 0x1f2f40 })
+      new THREE.MeshBasicMaterial({ color: colors.bed })
     );
     // Izgaranın altında kalmasın diye çok hafif aşağıda; çizgiler yüzeyde.
     bedSurface.position.set(center.x, center.y, -0.08);
     scene.add(bedSurface);
+    bedRef.current = bedSurface;
 
-    const grid = new THREE.GridHelper(bedSize, divisions, 0x7fa0c0, 0x44607c);
+    const grid = new THREE.GridHelper(bedSize, divisions, colors.gridMajor, colors.gridMinor);
     grid.rotation.x = Math.PI / 2;
     grid.position.set(center.x, center.y, 0);
     scene.add(grid);
+    gridRef.current = grid;
 
     // Tabla kenarı: belirgin bir çerçeve, ölçek hissi için.
     const plate = new THREE.LineLoop(
@@ -323,14 +309,16 @@ export function GcodePreviewViewer({ data, className }: GcodePreviewViewerProps)
         new THREE.Vector3(center.x + bedSize / 2, center.y + bedSize / 2, 0),
         new THREE.Vector3(center.x - bedSize / 2, center.y + bedSize / 2, 0),
       ]),
-      new THREE.LineBasicMaterial({ color: 0xaec8e0 })
+      new THREE.LineBasicMaterial({ color: colors.border })
     );
     scene.add(plate);
+    borderRef.current = plate;
 
     const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
     renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
     renderer.outputColorSpace = THREE.LinearSRGBColorSpace;
-    renderer.setClearColor(0x0e1723, 1);
+    renderer.setClearColor(colors.clear, 1);
+    rendererRef.current = renderer;
 
     const camera = new THREE.PerspectiveCamera(42, 1, Math.max(0.1, diagonal / 500), diagonal * 20);
     camera.up.set(0, 0, 1);
@@ -394,12 +382,64 @@ export function GcodePreviewViewer({ data, className }: GcodePreviewViewerProps)
         mount.removeChild(renderer.domElement);
       }
       materialRef.current = null;
+      paletteRef.current = null;
+      bedRef.current = null;
+      borderRef.current = null;
+      gridRef.current = null;
       controlsRef.current = null;
       cameraRef.current = null;
       frameRef.current = null;
+      sceneRef.current = null;
     };
-    // Veri değişirse sahne tamamen yeniden kurulur.
-  }, [data, maxSpeed, totalLayers]);
+    // Veri değişirse sahne tamamen yeniden kurulur. Tema değişimi sahneyi
+    // yeniden kurmaz (kamera korunur); renkler aşağıdaki effect ile güncellenir.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data, totalLayers]);
+
+  /* ---------------------------------------------------------------------- */
+  /* Tema → sahne renkleri                                                   */
+  /* ---------------------------------------------------------------------- */
+
+  useEffect(() => {
+    const scene = sceneRef.current;
+    const renderer = rendererRef.current;
+    if (!scene || !renderer) return;
+
+    const colors = stageColors(isDark);
+    renderer.setClearColor(colors.clear, 1);
+
+    const bedMaterial = bedRef.current?.material as THREE.MeshBasicMaterial | undefined;
+    if (bedMaterial) bedMaterial.color.setHex(colors.bed);
+
+    const borderMaterial = borderRef.current?.material as THREE.LineBasicMaterial | undefined;
+    if (borderMaterial) borderMaterial.color.setHex(colors.border);
+
+    // Izgara rengi sınıf içinde sabit; yeniden üretilir.
+    const spec = bedSpecRef.current;
+    if (gridRef.current && spec) {
+      scene.remove(gridRef.current);
+      gridRef.current.geometry.dispose();
+      (gridRef.current.material as THREE.Material).dispose();
+      const grid = new THREE.GridHelper(spec.size, spec.divisions, colors.gridMajor, colors.gridMinor);
+      grid.rotation.x = Math.PI / 2;
+      grid.position.set(spec.x, spec.y, 0);
+      scene.add(grid);
+      gridRef.current = grid;
+    }
+
+    // Palet: açık temada çizgiler beyaz zeminde kaybolmasın diye koyulaştırılır.
+    const paletteTexture = paletteRef.current;
+    if (paletteTexture) {
+      const pixels = paletteTexture.image.data;
+      data.meta.types.forEach((type, index) => {
+        const [r, g, b] = hexToRgb(toolpathColor(type.color, isDark));
+        pixels[index * 4] = Math.round(r * 255);
+        pixels[index * 4 + 1] = Math.round(g * 255);
+        pixels[index * 4 + 2] = Math.round(b * 255);
+      });
+      paletteTexture.needsUpdate = true;
+    }
+  }, [isDark, data]);
 
   /* ---------------------------------------------------------------------- */
   /* Kontroller → shader                                                     */
@@ -411,12 +451,13 @@ export function GcodePreviewViewer({ data, className }: GcodePreviewViewerProps)
 
     material.uniforms.uLayerMax.value = layer - 1;
     material.uniforms.uColorMode.value = colorMode === 'speed' ? 1 : 0;
+    material.uniforms.uMaxSpeed.value = maxSpeed;
 
     const flags = material.uniforms.uTypeVisible.value as Float32Array;
     for (let i = 0; i < MAX_TYPES; i += 1) {
       flags[i] = visibleTypes[i] ? 1 : 0;
     }
-  }, [layer, colorMode, visibleTypes]);
+  }, [layer, colorMode, visibleTypes, maxSpeed]);
 
   /* ---------------------------------------------------------------------- */
   /* Oynatma                                                                 */
@@ -440,254 +481,44 @@ export function GcodePreviewViewer({ data, className }: GcodePreviewViewerProps)
     return () => window.clearInterval(timer);
   }, [playing, totalLayers]);
 
-  const toggleType = useCallback((index: number) => {
-    setVisibleTypes((previous) => previous.map((value, i) => (i === index ? !value : value)));
-  }, []);
-
-  const allVisible = visibleTypes.every(Boolean);
-  const toggleAll = () => {
-    const next = !allVisible;
-    setVisibleTypes((previous) => previous.map(() => next));
-  };
-
-  const supportIndex = data.meta.types.findIndex((type) => type.id === 'support');
-  const supportInterfaceIndex = data.meta.types.findIndex(
-    (type) => type.id === 'support_interface'
-  );
-  const supportVisible =
-    (supportIndex < 0 || visibleTypes[supportIndex]) &&
-    (supportInterfaceIndex < 0 || visibleTypes[supportInterfaceIndex]);
-
-  const toggleSupport = () => {
-    const next = !supportVisible;
-    setVisibleTypes((previous) =>
-      previous.map((value, i) =>
-        i === supportIndex || i === supportInterfaceIndex ? next : value
-      )
-    );
-  };
-
-  const travelIndex = data.meta.types.findIndex((type) => type.id === 'travel');
-  const travelVisible = travelIndex >= 0 ? visibleTypes[travelIndex] : false;
-  const toggleTravel = () => {
-    if (travelIndex < 0) return;
-    toggleType(travelIndex);
-  };
-
-  const stats = data.meta.stats;
-  const configEntries = Object.entries(data.meta.config).filter(([key]) => key in CONFIG_LABELS);
-
   return (
-    <div className={cn('relative flex h-full min-h-0 w-full flex-col overflow-hidden rounded-xl bg-[#0e1723]', className)}>
+    <div
+      className={cn(
+        'relative flex h-full min-h-0 w-full flex-col overflow-hidden rounded-xl',
+        isDark ? 'bg-[#0a0e13]' : 'bg-[#f1f4f8]',
+        className
+      )}
+    >
       <div ref={mountRef} className="relative min-h-0 flex-1" />
 
-      {/* Sol üst: baskı istatistikleri */}
-      <div className="pointer-events-none absolute left-2 top-2 max-w-[240px] space-y-1.5 rounded-lg border border-white/10 bg-black/55 p-2.5 text-[11px] text-slate-200 backdrop-blur-sm">
-        <div className="flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-wide text-slate-400">
-          <Layers className="h-3 w-3" /> Dilimleyici önizlemesi
-        </div>
-        <div className="flex items-center gap-3">
-          <span className="inline-flex items-center gap-1">
-            <Weight className="h-3 w-3 text-sky-400" />
-            <span className="font-semibold text-white">{formatGrams(stats.grams)}</span>
-          </span>
-          <span className="inline-flex items-center gap-1">
-            <Timer className="h-3 w-3 text-emerald-400" />
-            <span className="font-semibold text-white">{formatDuration(stats.printSeconds)}</span>
-          </span>
-        </div>
-        <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-slate-400">
-          <span>{stats.layerCount} nesne katmanı</span>
-          <span>{stats.supportGrams > 0 ? formatGrams(stats.supportGrams) + ' destek' : 'destek yok'}</span>
-          <span>{(stats.filamentMm / 1000).toFixed(2)} m filaman</span>
-          <span>
-            {dimensions[0].toFixed(1)} × {dimensions[1].toFixed(1)} × {dimensions[2].toFixed(1)} mm
-          </span>
-          {data.meta.droppedSegments > 0 && (
-            <span className="text-amber-400">
-              {data.meta.droppedSegments} segment kırpıldı
-            </span>
-          )}
-        </div>
-        <div className="text-[10px] text-slate-500">
-          {data.meta.segmentCount > 0 &&
-            `${data.meta.segmentCount.toLocaleString('tr-TR')} hareket`}
-        </div>
-      </div>
-
-      {/* Sağ üst: hızlı kontroller */}
-      <div className="absolute right-2 top-2 flex flex-col items-end gap-1.5">
-        <div className="flex items-center gap-1.5">
-          <div className="flex overflow-hidden rounded-md border border-white/10 bg-black/55 text-[10px] backdrop-blur-sm">
-            <button
-              type="button"
-              onClick={() => setColorMode('type')}
-              className={cn(
-                'px-2 py-1 transition-colors',
-                colorMode === 'type' ? 'bg-primary/80 text-white' : 'text-slate-300 hover:bg-white/10'
-              )}
-            >
-              Tür
-            </button>
-            <button
-              type="button"
-              onClick={() => setColorMode('speed')}
-              className={cn(
-                'px-2 py-1 transition-colors',
-                colorMode === 'speed' ? 'bg-primary/80 text-white' : 'text-slate-300 hover:bg-white/10'
-              )}
-            >
-              Hız
-            </button>
-          </div>
-          <button
-            type="button"
-            onClick={() => frameRef.current?.()}
-            className="rounded-md border border-white/10 bg-black/55 p-1.5 text-slate-200 backdrop-blur-sm transition-colors hover:bg-white/10"
-            title="Görünümü sıfırla"
-          >
-            <Camera className="h-3.5 w-3.5" />
-          </button>
-          <button
-            type="button"
-            onClick={() => setPanel(panel === 'types' ? null : 'types')}
-            className={cn(
-              'rounded-md border border-white/10 p-1.5 backdrop-blur-sm transition-colors',
-              panel === 'types' ? 'bg-primary/80 text-white' : 'bg-black/55 text-slate-200 hover:bg-white/10'
-            )}
-            title="Takım yolu türleri"
-          >
-            <Eye className="h-3.5 w-3.5" />
-          </button>
-          <button
-            type="button"
-            onClick={() => setPanel(panel === 'config' ? null : 'config')}
-            className={cn(
-              'rounded-md border border-white/10 p-1.5 backdrop-blur-sm transition-colors',
-              panel === 'config' ? 'bg-primary/80 text-white' : 'bg-black/55 text-slate-200 hover:bg-white/10'
-            )}
-            title="Dilimleme ayarları"
-          >
-            <Settings2 className="h-3.5 w-3.5" />
-          </button>
-        </div>
-
-        {colorMode === 'speed' && (
-          <div className="w-40 rounded-md border border-white/10 bg-black/55 p-1.5 text-[9px] text-slate-300 backdrop-blur-sm">
-            <div className="h-1.5 w-full rounded-full bg-[linear-gradient(90deg,#3b82f6,#22c55e,#f97316,#ef4444)]" />
-            <div className="mt-0.5 flex justify-between text-slate-400">
-              <span>yavaş</span>
-              <span>{Math.round(maxSpeed)} mm/s</span>
-            </div>
-          </div>
+      {/* Üst sağ: yalnızca kamera sıfırlama. Tür/ayar panelleri yan sütunda. */}
+      <button
+        type="button"
+        onClick={() => frameRef.current?.()}
+        className={cn(
+          'absolute right-2 top-2 rounded-md border p-1.5 backdrop-blur-sm transition-colors',
+          isDark
+            ? 'border-white/10 bg-black/55 text-slate-200 hover:bg-white/10'
+            : 'border-slate-300/70 bg-white/85 text-slate-600 shadow-sm hover:bg-white'
         )}
-
-        {/* Tür / ayar paneli */}
-        {panel && (
-          <div className="max-h-[55vh] w-64 overflow-y-auto rounded-lg border border-white/10 bg-black/70 p-2.5 text-[11px] text-slate-200 backdrop-blur-md">
-            {panel === 'types' ? (
-              <div className="space-y-2">
-                <div className="flex items-center justify-between">
-                  <span className="text-[10px] font-medium uppercase tracking-wide text-slate-400">
-                    Takım yolları
-                  </span>
-                  <button
-                    type="button"
-                    onClick={toggleAll}
-                    className="text-[10px] text-primary hover:underline"
-                  >
-                    {allVisible ? 'Tümünü gizle' : 'Tümünü göster'}
-                  </button>
-                </div>
-
-                <div className="flex flex-wrap gap-1">
-                  <button
-                    type="button"
-                    onClick={toggleSupport}
-                    className={cn(
-                      'rounded border px-1.5 py-0.5 text-[10px] transition-colors',
-                      supportVisible
-                        ? 'border-cyan-400/40 bg-cyan-500/20 text-cyan-200'
-                        : 'border-white/10 bg-white/5 text-slate-400'
-                    )}
-                  >
-                    Destek yapıları
-                  </button>
-                  <button
-                    type="button"
-                    onClick={toggleTravel}
-                    className={cn(
-                      'rounded border px-1.5 py-0.5 text-[10px] transition-colors',
-                      travelVisible
-                        ? 'border-slate-400/40 bg-slate-500/20 text-slate-200'
-                        : 'border-white/10 bg-white/5 text-slate-400'
-                    )}
-                  >
-                    Seyahat
-                  </button>
-                </div>
-
-                <div className="space-y-1">
-                  {data.meta.types.map((type, index) => (
-                    <button
-                      key={type.id}
-                      type="button"
-                      onClick={() => toggleType(index)}
-                      className={cn(
-                        'flex w-full items-center gap-2 rounded px-1 py-0.5 text-left transition-colors hover:bg-white/10',
-                        visibleTypes[index] ? 'opacity-100' : 'opacity-45'
-                      )}
-                    >
-                      <span
-                        className="h-2.5 w-2.5 shrink-0 rounded-sm"
-                        style={{ backgroundColor: type.color }}
-                      />
-                      <span className="min-w-0 flex-1 truncate">{type.label}</span>
-                      <span className="shrink-0 tabular-nums text-slate-400">
-                        {type.grams > 0 ? `${type.grams.toFixed(2)} g` : '—'}
-                      </span>
-                      <span className="w-14 shrink-0 text-right tabular-nums text-slate-500">
-                        {type.seconds > 0 ? formatDuration(type.seconds) : ''}
-                      </span>
-                      {visibleTypes[index] ? (
-                        <Eye className="h-3 w-3 shrink-0 text-slate-400" />
-                      ) : (
-                        <EyeOff className="h-3 w-3 shrink-0 text-slate-500" />
-                      )}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            ) : (
-              <div className="space-y-1.5">
-                <div className="text-[10px] font-medium uppercase tracking-wide text-slate-400">
-                  Dilimleme ayarları
-                </div>
-                {configEntries.length === 0 && (
-                  <p className="text-slate-400">Bu G-Code ayar bloğu içermiyor.</p>
-                )}
-                {configEntries.map(([key, value]) => (
-                  <div key={key} className="flex justify-between gap-2">
-                    <span className="text-slate-400">{CONFIG_LABELS[key] ?? key}</span>
-                    <span className="max-w-[110px] truncate text-right font-medium text-slate-100">
-                      {value}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        )}
-      </div>
+        title="Görünümü sıfırla"
+      >
+        <Camera className="h-3.5 w-3.5" />
+      </button>
 
       {/* Alt: katman kaydırıcısı */}
-      <div className="border-t border-white/10 bg-black/60 px-2.5 py-2 backdrop-blur-sm">
+      <div
+        className={cn(
+          'border-t px-2.5 py-2 backdrop-blur-sm',
+          isDark ? 'border-white/10 bg-black/60' : 'border-slate-200 bg-white/85'
+        )}
+      >
         <div className="flex items-center gap-2.5">
           <Button
             type="button"
             size="sm"
             variant="ghost"
-            className="h-7 w-7 shrink-0 p-0 text-slate-200 hover:bg-white/10 hover:text-white"
+            className={cn('h-7 w-7 shrink-0 p-0', isDark ? 'text-slate-200 hover:bg-white/10 hover:text-white' : 'text-slate-600 hover:bg-slate-200/70')}
             onClick={() => {
               if (layer >= totalLayers) setLayer(1);
               setPlaying((value) => !value);
@@ -700,7 +531,7 @@ export function GcodePreviewViewer({ data, className }: GcodePreviewViewerProps)
             type="button"
             size="sm"
             variant="ghost"
-            className="h-7 w-7 shrink-0 p-0 text-slate-200 hover:bg-white/10 hover:text-white"
+            className={cn('h-7 w-7 shrink-0 p-0', isDark ? 'text-slate-200 hover:bg-white/10 hover:text-white' : 'text-slate-600 hover:bg-slate-200/70')}
             onClick={() => setLayer((value) => Math.max(1, value - 1))}
             title="Önceki katman"
           >
@@ -716,13 +547,13 @@ export function GcodePreviewViewer({ data, className }: GcodePreviewViewerProps)
               setPlaying(false);
               setLayer(Number(event.target.value));
             }}
-            className="h-1.5 min-w-0 flex-1 cursor-pointer appearance-none rounded-full bg-white/15 accent-primary"
+            className="h-1.5 min-w-0 flex-1 cursor-pointer appearance-none rounded-full accent-primary"
             style={{
               background: `linear-gradient(to right, hsl(var(--primary)) 0%, hsl(var(--primary)) ${
                 ((layer - 1) / Math.max(1, totalLayers - 1)) * 100
-              }%, rgba(255,255,255,0.15) ${
+              }%, ${isDark ? 'rgba(255,255,255,0.15)' : 'rgba(15,23,42,0.15)'} ${
                 ((layer - 1) / Math.max(1, totalLayers - 1)) * 100
-              }%, rgba(255,255,255,0.15) 100%)`,
+              }%, ${isDark ? 'rgba(255,255,255,0.15)' : 'rgba(15,23,42,0.15)'} 100%)`,
             }}
           />
 
@@ -730,19 +561,19 @@ export function GcodePreviewViewer({ data, className }: GcodePreviewViewerProps)
             type="button"
             size="sm"
             variant="ghost"
-            className="h-7 w-7 shrink-0 p-0 text-slate-200 hover:bg-white/10 hover:text-white"
+            className={cn('h-7 w-7 shrink-0 p-0', isDark ? 'text-slate-200 hover:bg-white/10 hover:text-white' : 'text-slate-600 hover:bg-slate-200/70')}
             onClick={() => setLayer((value) => Math.min(totalLayers, value + 1))}
             title="Sonraki katman"
           >
             <ChevronRight className="h-3.5 w-3.5" />
           </Button>
 
-          <div className="shrink-0 text-[10px] tabular-nums text-slate-300">
-            <span className="font-semibold text-white">
+          <div className={cn('shrink-0 text-[10px] tabular-nums', isDark ? 'text-slate-300' : 'text-slate-600')}>
+            <span className={cn('font-semibold', isDark ? 'text-white' : 'text-slate-900')}>
               {layer}/{totalLayers}
             </span>
             {currentLayer && (
-              <span className="ml-1.5 text-slate-400">
+              <span className={cn('ml-1.5', isDark ? 'text-slate-400' : 'text-slate-500')}>
                 Z {currentLayer.z.toFixed(2)} · {formatDuration(currentLayer.seconds)} ·{' '}
                 {formatGrams(currentLayer.grams)}
                 {currentLayer.supportGrams > 0 && ` (${currentLayer.supportGrams.toFixed(2)} g destek)`}
@@ -751,6 +582,12 @@ export function GcodePreviewViewer({ data, className }: GcodePreviewViewerProps)
           </div>
         </div>
       </div>
+
+      {/* Ölçü bilgisi: yalnızca ekran okuyucular ve hızlı referans için. */}
+      <span className="sr-only">
+        {dimensions[0].toFixed(1)} × {dimensions[1].toFixed(1)} × {dimensions[2].toFixed(1)} mm,
+        en yüksek hız {Math.round(maxSpeed)} mm/s
+      </span>
     </div>
   );
 }

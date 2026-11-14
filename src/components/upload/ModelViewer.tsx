@@ -4,10 +4,14 @@
  * ModelViewer — sade 3D önizleme.
  *
  * Bilinçli olarak yalnızca:
- * - düz gri arkaplan,
- * - ışıksız (unlit) model malzemesi,
- * - yörünge kontrolleri (döndür / kaydır / yakınlaştır)
- * içerir. Tabla, ızgara, eksenler, ışıklar, ortam haritası ve gölge yoktur.
+ * - yarı mat model malzemesi (detay/highlight okunur),
+ * - sabit arka plan (koyu tema tamamen siyah, açık tema tamamen beyaz),
+ * - **çapraz (3/4) ve hafif geriden** kamera ve yörünge kontrolleri
+ * içerir. Gölge, tabla, ızgara ve eksen yoktur.
+ *
+ * Model rengi kullanıcının seçtiği renktir; renk adları Türkçe/İngilizce ve
+ * `#rrggbb` olarak çözülür. Arka plan modelden bağımsızdır: siyah zeminde her
+ * renk, beyaz zeminde de koyu renkler ayrışır.
  */
 
 import { useEffect, useRef, useState, useCallback } from 'react';
@@ -18,6 +22,8 @@ import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Loader2, RotateCcw, ZoomIn, ZoomOut, Camera, Maximize2, Minimize2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { hexToInt, resolveColorHex } from '@/lib/utils/color';
+import { useIsDarkMode } from '@/hooks/use-is-dark';
 
 interface ModelViewerProps {
   file?: File;
@@ -30,17 +36,43 @@ interface ModelViewerProps {
   onError?: (error: Error) => void;
 }
 
-/** Düz gri arkaplan. */
-const BACKGROUND_COLOR = 0x9a9a9a;
+/**
+ * Tema arka planı: koyu temada tamamen siyah, açık temada tamamen beyaz.
+ * Ara ton yok; modelin kendisi ışıkla ayrışır.
+ */
+function backgroundFor(isDark: boolean): number {
+  return isDark ? 0x000000 : 0xffffff;
+}
 
-const COLOR_MAP: Record<string, number> = {
-  'Natural': 0xF5F5DC, 'White': 0xFFFFFF, 'Black': 0x1A1A1A,
-  'Red': 0xFF0000, 'Blue': 0x2563EB, 'Green': 0x16A34A,
-  'Yellow': 0xEAB308, 'Orange': 0xEA580C, 'Purple': 0x9333EA, 'Gray': 0x6B7280,
-};
+/** Çapraz (3/4) görünüm yönü: ön-sağ-üst. STL'ler Z-up kabul edilir. */
+const CAMERA_DIRECTION = new THREE.Vector3(1, -1.25, 0.8).normalize();
 
-function materialColorFor(color: string): number {
-  return COLOR_MAP[color] ?? COLOR_MAP['Natural'];
+/**
+ * Kamerayı modelin çaprazına yerleştirir (hafif geriden, ön-sağ-üst).
+ *
+ * STL dosyaları Z-up'tır; `up` ekseni +Z. Yatay sığdırma için X/Y'den büyük
+ * olanı kullanılır, böylece çapraz bakışta model çerçeveden taşmaz.
+ */
+function frameDiagonalView(
+  camera: THREE.PerspectiveCamera,
+  controls: OrbitControls,
+  box: THREE.Box3
+): void {
+  const size = box.getSize(new THREE.Vector3());
+  const center = box.getCenter(new THREE.Vector3());
+
+  const aspect = camera.aspect && Number.isFinite(camera.aspect) ? camera.aspect : 1;
+  const halfFov = (camera.fov * Math.PI) / 360;
+  const horizontal = Math.max(size.x, size.y);
+  const distanceByWidth = horizontal / 2 / (Math.tan(halfFov) * aspect);
+  const distanceByHeight = size.z / 2 / Math.tan(halfFov);
+  // 1.55: model çerçeveyi doldurmaz, kenarlarda nefes payı kalır.
+  const distance = Math.max(distanceByWidth, distanceByHeight) * 1.55 + 1;
+
+  camera.up.set(0, 0, 1);
+  camera.position.copy(center).addScaledVector(CAMERA_DIRECTION, distance);
+  controls.target.copy(center);
+  controls.update();
 }
 
 export function ModelViewer({
@@ -61,7 +93,11 @@ export function ModelViewer({
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [isScreenshotting, setIsScreenshotting] = useState(false);
 
-  // Sahneyi kur: ışık, tabla, ızgara, ortam haritası YOK.
+  const isDark = useIsDarkMode();
+  const modelHex = resolveColorHex(color);
+  const background = backgroundFor(isDark);
+
+  // Sahne: ışık, tabla, ızgara YOK.
   useEffect(() => {
     if (!canvasRef.current || !containerRef.current) return;
 
@@ -69,18 +105,40 @@ export function ModelViewer({
     const canvas = canvasRef.current;
 
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color(BACKGROUND_COLOR);
     sceneRef.current = scene;
+    // Arka plan temaya bağlı; renk değişiminde aşağıdaki effect günceller.
+    scene.background = new THREE.Color(background);
+    // Sahne yeniden kurulursa (yalnızca `autoRotate` değişiminde) yüklü model
+    // yeni sahneye taşınır.
+    if (meshRef.current) scene.add(meshRef.current);
 
     const camera = new THREE.PerspectiveCamera(
       45, container.clientWidth / container.clientHeight, 0.1, 100000
     );
-    camera.position.set(120, 100, 120);
+    camera.up.set(0, 0, 1);
+    camera.position.set(0, -200, 0);
     cameraRef.current = camera;
+
+    // Aydınlatma: model tamamen mat görünmesin diye ana ışık + dolgu + tepe
+    // ışığı. Gölge, tabla ve ızgara yok; yalnızca yüzey detayı okunur.
+    scene.add(new THREE.AmbientLight(0xffffff, 0.45));
+
+    const keyLight = new THREE.DirectionalLight(0xffffff, 2.4);
+    keyLight.position.set(1.1, -1.6, 1.9);
+    scene.add(keyLight);
+
+    const fillLight = new THREE.DirectionalLight(0xffffff, 0.9);
+    fillLight.position.set(-1.4, -0.9, 0.5);
+    scene.add(fillLight);
+
+    const rimLight = new THREE.DirectionalLight(0xffffff, 1.1);
+    rimLight.position.set(-0.3, 1.4, 0.7);
+    scene.add(rimLight);
 
     const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
     renderer.setSize(container.clientWidth, container.clientHeight);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
     rendererRef.current = renderer;
 
     const controls = new OrbitControls(camera, canvas);
@@ -122,7 +180,18 @@ export function ModelViewer({
       controls.dispose();
       renderer.dispose();
     };
+    // `background` yalnızca sahne kurulurken okunur; değişimini ayrı effect uygular.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoRotate]);
+
+  useEffect(() => {
+    if (controlsRef.current) controlsRef.current.autoRotate = autoRotate;
+  }, [autoRotate]);
+
+  // Tema / model rengi değişince arka planı güncelle.
+  useEffect(() => {
+    if (sceneRef.current) sceneRef.current.background = new THREE.Color(background);
+  }, [background]);
 
   // Modeli yükle.
   useEffect(() => {
@@ -160,30 +229,30 @@ export function ModelViewer({
       geometry.center();
       geometry.computeBoundingBox();
 
-      // Işıksız malzeme: modelin rengi seçilen renk, gölge/highlight yok.
-      const material = new THREE.MeshBasicMaterial({
-        color: materialColorFor(color),
+      // Yarı mat yüzey: düşük pürüzlülük detayı (çıkıntı/oyuk) highlight ile
+      // gösterir; tamamen mat (basic) malzemede model tek düz leke gibi kalıyordu.
+      const material = new THREE.MeshStandardMaterial({
+        color: hexToInt(resolveColorHex(color)),
+        roughness: 0.45,
+        metalness: 0.08,
       });
 
       const mesh = new THREE.Mesh(geometry, material);
-      mesh.rotation.x = -Math.PI / 2;
-
-      const rotatedBox = new THREE.Box3().setFromObject(mesh);
-      const rotatedSize = new THREE.Vector3();
-      rotatedBox.getSize(rotatedSize);
-      mesh.position.y = rotatedSize.y / 2;
-
       meshRef.current = mesh;
       currentScene.add(mesh);
 
-      // Kamerayı modele sığdır.
+      // Çapraz görünüm + modele sığdırma.
       if (cameraRef.current && controlsRef.current) {
-        const target = new THREE.Vector3(0, rotatedSize.y / 2, 0);
-        const maxDim = Math.max(rotatedSize.x, rotatedSize.y, rotatedSize.z);
-        const distance = Math.max(maxDim * 2.2, 10);
-        const direction = new THREE.Vector3(1.2, 0.9, 1.2).normalize();
-        cameraRef.current.position.copy(direction.multiplyScalar(distance).add(target));
-        controlsRef.current.target.copy(target);
+        cameraRef.current.aspect =
+          (containerRef.current?.clientWidth ?? 1) /
+          Math.max(1, containerRef.current?.clientHeight ?? 1);
+        cameraRef.current.updateProjectionMatrix();
+
+        const box = new THREE.Box3().setFromObject(mesh);
+        frameDiagonalView(cameraRef.current, controlsRef.current, box);
+
+        const size = box.getSize(new THREE.Vector3());
+        const maxDim = Math.max(size.x, size.y, size.z, 1);
         controlsRef.current.minDistance = Math.max(maxDim * 0.2, 1);
         controlsRef.current.maxDistance = Math.max(maxDim * 10, 100);
         controlsRef.current.update();
@@ -224,27 +293,22 @@ export function ModelViewer({
     }
 
     return () => { isCancelled = true; };
-  }, [file, url, onLoad, onError, color]);
+    // `color` bilinçli olarak dışarıda: renk değişimi modeli yeniden indirmez.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [file, url, onLoad, onError]);
 
   // Renk değişince malzeme rengini güncelle.
   useEffect(() => {
     const mesh = meshRef.current;
     if (mesh && mesh.material) {
-      (mesh.material as THREE.MeshBasicMaterial).color.setHex(materialColorFor(color));
+      (mesh.material as THREE.MeshStandardMaterial).color.setHex(hexToInt(modelHex));
     }
-  }, [color]);
+  }, [modelHex]);
 
   const resetCamera = useCallback(() => {
     if (!cameraRef.current || !controlsRef.current || !meshRef.current) return;
     const box = new THREE.Box3().setFromObject(meshRef.current);
-    const center = box.getCenter(new THREE.Vector3());
-    const size = box.getSize(new THREE.Vector3());
-    const maxDim = Math.max(size.x, size.y, size.z);
-    const fov = cameraRef.current.fov * (Math.PI / 180);
-    const distance = Math.abs(maxDim / Math.sin(fov / 2)) * 1.2;
-    const direction = new THREE.Vector3(1.2, 0.9, 1.2).normalize();
-    cameraRef.current.position.copy(direction.multiplyScalar(distance).add(center));
-    controlsRef.current.target.copy(center);
+    frameDiagonalView(cameraRef.current, controlsRef.current, box);
     controlsRef.current.update();
   }, []);
 
@@ -289,30 +353,45 @@ export function ModelViewer({
 
   return (
     <Card className={cn('relative overflow-hidden border-0 shadow-none', className)}>
-      <div ref={containerRef} className="relative w-full h-full min-h-[400px] bg-[#9a9a9a]">
+      <div
+        ref={containerRef}
+        className="relative w-full h-full min-h-[240px]"
+        style={{ backgroundColor: `#${background.toString(16).padStart(6, '0')}` }}
+      >
         <canvas ref={canvasRef} className="block w-full h-full max-w-full" style={{ maxWidth: '100%' }} />
 
         {isLoading && (
-          <div className="absolute inset-0 flex items-center justify-center bg-[#9a9a9a]/80">
+          <div className={cn(
+            'absolute inset-0 flex items-center justify-center backdrop-blur-[1px]',
+            isDark ? 'bg-black/80' : 'bg-white/80'
+          )}>
             <div className="flex flex-col items-center space-y-2">
-              <Loader2 className="h-8 w-8 animate-spin text-white" />
-              <p className="text-sm text-white/80">Model yükleniyor...</p>
+              <Loader2 className={cn('h-8 w-8 animate-spin', isDark ? 'text-white' : 'text-slate-600')} />
+              <p className={cn('text-sm', isDark ? 'text-white/80' : 'text-slate-600')}>
+                Model yükleniyor...
+              </p>
             </div>
           </div>
         )}
 
         {error && (
-          <div className="absolute inset-0 flex items-center justify-center bg-[#9a9a9a]/80">
+          <div className={cn(
+            'absolute inset-0 flex items-center justify-center',
+            isDark ? 'bg-black/80' : 'bg-white/80'
+          )}>
             <div className="text-center space-y-2 p-4">
-              <p className="text-sm font-medium text-white">Hata</p>
-              <p className="text-xs text-white/80">{error}</p>
+              <p className={cn('text-sm font-medium', isDark ? 'text-white' : 'text-slate-700')}>Hata</p>
+              <p className={cn('text-xs', isDark ? 'text-white/80' : 'text-slate-600')}>{error}</p>
             </div>
           </div>
         )}
 
         {showControls && !isLoading && !error && (
-          <div className="absolute bottom-2 right-2 sm:bottom-3 sm:right-3 flex items-center gap-1 bg-background/80 backdrop-blur-sm rounded-lg p-1">
-            <Button size="icon" variant="ghost" className="h-7 w-7" onClick={resetCamera} title="Kamerayı sıfırla">
+          <div className={cn(
+            'absolute bottom-2 right-2 sm:bottom-3 sm:right-3 flex items-center gap-1 rounded-lg p-1 backdrop-blur-sm',
+            isDark ? 'bg-black/55 text-slate-200' : 'bg-white/85 text-slate-600 shadow-sm'
+          )}>
+            <Button size="icon" variant="ghost" className="h-7 w-7" onClick={resetCamera} title="Görünümü sıfırla">
               <RotateCcw className="h-3.5 w-3.5" />
             </Button>
             <Button size="icon" variant="ghost" className="h-7 w-7" onClick={zoomIn} title="Yakınlaştır">
