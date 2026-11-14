@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -36,6 +36,35 @@ export function AddressFormDialog({ open, onOpenChange, onSave, initial, existin
   const [isDefault, setIsDefault] = useState(initial?.is_default || false);
   const [saving, setSaving] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
+  const wasOpenRef = useRef(false);
+
+  /**
+   * Form alanları `initial` ile yalnızca ilk render'da dolduruluyordu; bileşen
+   * diyalog kapalıyken de mount kaldığı için "Adresi Düzenle" her zaman boş
+   * açılıyordu. Her açılışta formu gelen adresle (yeni adreste boş) yeniden doldur.
+   */
+  useEffect(() => {
+    if (open && !wasOpenRef.current) {
+      const presetTitle = initial?.title ?? '';
+      const isPresetTitle = TITLE_OPTIONS.includes(presetTitle);
+
+      setTitle(presetTitle ? (isPresetTitle ? presetTitle : 'Diger') : '');
+      setCustomTitle(presetTitle && !isPresetTitle ? presetTitle : '');
+      setFullName(initial?.full_name ?? '');
+      setPhone(initial?.phone ?? '');
+      setCity(initial?.city ?? '');
+      setDistrict(initial?.district ?? '');
+      setNeighborhood(initial?.neighborhood ?? '');
+      setStreet(initial?.street ?? '');
+      setBuildingNo(initial?.building_no ?? '');
+      setApartmentNo(initial?.apartment_no ?? '');
+      setZipCode(initial?.zip_code ?? '');
+      setIsDefault(initial?.is_default ?? false);
+      setErrors({});
+    }
+
+    wasOpenRef.current = open;
+  }, [open, initial]);
 
   const reset = () => {
     setTitle('');
