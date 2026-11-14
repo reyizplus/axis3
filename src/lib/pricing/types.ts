@@ -251,7 +251,6 @@ export interface LaborTimeRow {
   task_type: string;
   label: string;
   base_minutes: number;
-  per_complexity_minutes: number;
   description: string;
   is_active: boolean;
   updated_at: string;
