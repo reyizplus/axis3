@@ -410,12 +410,12 @@ export default function AdminOrderDetailPage() {
                 </div>
               )}
               <div className="flex justify-between">
-                <span className="text-muted-foreground">Ara Toplam</span>
-                <span className="font-medium">{f(order.subtotal)}</span>
-              </div>
-              <div className="flex justify-between">
                 <span className="text-muted-foreground">Kargo</span>
                 <span className="font-medium">{f(order.shipping_cost)}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Ara Toplam</span>
+                <span className="font-medium">{f(order.subtotal + order.shipping_cost)}</span>
               </div>
               <div className="flex justify-between">
                 <span className="text-muted-foreground">KDV</span>

@@ -130,6 +130,8 @@ function CartContent() {
   const subtotal = subtotal3D + subtotalStore;
   const computedShipping = shippingFee > 0 && subtotal >= freeShippingMinAmount ? 0 : shippingFee;
   const remainingForFreeShipping = shippingFee > 0 && computedShipping > 0 ? freeShippingMinAmount - subtotal : 0;
+  // "Ara Toplam" ürünler + kargo; KDV bu tutar üzerinden bir kez eklenir.
+  const summarySubtotal = subtotal + computedShipping;
   const taxableBase = subtotal + computedShipping;
   const vat = taxableBase * vatRate;
   const total = taxableBase + vat;
@@ -396,7 +398,7 @@ function CartContent() {
                       <div className="border-t border-border/50 pt-2.5 space-y-2.5">
                         <div className="flex justify-between">
                           <span className="text-muted-foreground">Ara Toplam</span>
-                          <span className="font-medium">{subtotal.toFixed(2)} TL</span>
+                          <span className="font-medium">{summarySubtotal.toFixed(2)} TL</span>
                         </div>
                         <div className="flex justify-between">
                           <span className="text-muted-foreground">KDV (%{(vatRate * 100).toFixed(0)})</span>

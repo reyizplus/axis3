@@ -862,12 +862,12 @@ export default function OrderDetailPage() {
                   </div>
                 )}
                 <div className="flex justify-between text-sm">
-                  <span className="text-muted-foreground">Ara Toplam</span>
-                  <span>{formatCurrency(order.total_amount - order.shipping_cost - order.tax_amount)}</span>
-                </div>
-                <div className="flex justify-between text-sm">
                   <span className="text-muted-foreground">Kargo</span>
                   <span>{formatCurrency(order.shipping_cost)}</span>
+                </div>
+                <div className="flex justify-between text-sm">
+                  <span className="text-muted-foreground">Ara Toplam</span>
+                  <span>{formatCurrency(order.total_amount - order.tax_amount)}</span>
                 </div>
                 <div className="flex justify-between text-sm">
                   <span className="text-muted-foreground">KDV</span>

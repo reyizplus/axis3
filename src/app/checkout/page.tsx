@@ -242,6 +242,8 @@ export default function CheckoutPage() {
     shippingFee,
     freeShippingMinAmount,
   });
+  // "Ara Toplam" ürünler + kargo; KDV bu tutar üzerinden bir kez eklenir.
+  const summarySubtotal = subtotal + computedShipping;
   const totalItems = cartItems.reduce((s, i) => s + i.quantity, 0) + storeItems.reduce((s, i) => s + i.quantity, 0);
 
   if (isLoading) {
@@ -549,7 +551,7 @@ export default function CheckoutPage() {
                       {computedShipping > 0 ? <span className="font-medium">{computedShipping.toFixed(2)} TL</span> : <span className="text-green-600 font-medium">Ücretsiz</span>}
                     </div>
                     <div className="border-t border-border/50 pt-2.5 space-y-2.5">
-                      <div className="flex justify-between"><span className="text-muted-foreground">Ara Toplam</span><span className="font-medium">{subtotal.toFixed(2)} TL</span></div>
+                      <div className="flex justify-between"><span className="text-muted-foreground">Ara Toplam</span><span className="font-medium">{summarySubtotal.toFixed(2)} TL</span></div>
                       <div className="flex justify-between"><span className="text-muted-foreground">KDV (%{(vatRate * 100).toFixed(0)})</span><span className="font-medium">{vat.toFixed(2)} TL</span></div>
                     </div>
                     <div className="border-t border-border/50 pt-2.5 flex justify-between items-baseline">
