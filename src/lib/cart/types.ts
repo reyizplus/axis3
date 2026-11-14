@@ -47,6 +47,8 @@ export interface CartItem {
   color?: string; // Print color (optional, default: 'Natural')
   nozzleSizeId?: string;
   nozzleSizeMm?: number;
+  /** Destek yapıları üretilsin mi (FDM). Fiyat ve dilimleme buna bağlıdır. */
+  supportEnabled?: boolean;
   isPreorder?: boolean;
   preorderDiscountPercent?: number | null;
   estimatedRestockDays?: number;

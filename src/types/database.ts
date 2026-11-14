@@ -160,7 +160,8 @@ export interface Database {
           print_setting_id: string; print_setting_name: string; quantity: number
           unit_price: number; total_price: number; estimated_time: number | null
           technology: 'FDM' | 'SLA' | null; color: string | null; nozzle_size_id: string | null
-          nozzle_size_mm: number | null; is_preorder: boolean | null
+          nozzle_size_mm: number | null; support_enabled: boolean
+          is_preorder: boolean | null
           preorder_discount_percent: number | null; estimated_restock_days: number | null
           custom_layer_height: number | null; custom_infill_percentage: number | null
           custom_time_multiplier: number | null; custom_layer_thickness: number | null
@@ -174,7 +175,8 @@ export interface Database {
           print_setting_id: string; print_setting_name: string; quantity?: number
           unit_price?: number; total_price?: number; estimated_time?: number | null
           technology?: 'FDM' | 'SLA' | null; color?: string | null; nozzle_size_id?: string | null
-          nozzle_size_mm?: number | null; is_preorder?: boolean | null
+          nozzle_size_mm?: number | null; support_enabled?: boolean
+          is_preorder?: boolean | null
           preorder_discount_percent?: number | null; estimated_restock_days?: number | null
           custom_layer_height?: number | null; custom_infill_percentage?: number | null
           custom_time_multiplier?: number | null; custom_layer_thickness?: number | null
@@ -188,7 +190,8 @@ export interface Database {
           print_setting_id?: string; print_setting_name?: string; quantity?: number
           unit_price?: number; total_price?: number; estimated_time?: number | null
           technology?: 'FDM' | 'SLA' | null; color?: string | null; nozzle_size_id?: string | null
-          nozzle_size_mm?: number | null; is_preorder?: boolean | null
+          nozzle_size_mm?: number | null; support_enabled?: boolean
+          is_preorder?: boolean | null
           preorder_discount_percent?: number | null; estimated_restock_days?: number | null
           custom_layer_height?: number | null; custom_infill_percentage?: number | null
           custom_time_multiplier?: number | null; custom_layer_thickness?: number | null
@@ -441,7 +444,7 @@ export interface Database {
           print_completed_at: string | null; print_duration_minutes: number | null
           printer_id: string | null; quality_check_passed: boolean | null
           quality_notes: string | null; color: string | null; nozzle_size_id: string | null
-          nozzle_size_mm: number | null; custom_layer_height: number | null
+          nozzle_size_mm: number | null; support_enabled: boolean; custom_layer_height: number | null
           custom_infill_percentage: number | null; custom_time_multiplier: number | null
           custom_layer_thickness: number | null; custom_exposure_time: number | null
           is_preorder: boolean | null; preorder_discount_percent: number | null
@@ -456,7 +459,7 @@ export interface Database {
           print_completed_at?: string | null; print_duration_minutes?: number | null
           printer_id?: string | null; quality_check_passed?: boolean | null
           quality_notes?: string | null; color?: string | null; nozzle_size_id?: string | null
-          nozzle_size_mm?: number | null; custom_layer_height?: number | null
+          nozzle_size_mm?: number | null; support_enabled?: boolean; custom_layer_height?: number | null
           custom_infill_percentage?: number | null; custom_time_multiplier?: number | null
           custom_layer_thickness?: number | null; custom_exposure_time?: number | null
           is_preorder?: boolean | null; preorder_discount_percent?: number | null
@@ -471,7 +474,7 @@ export interface Database {
           print_completed_at?: string | null; print_duration_minutes?: number | null
           printer_id?: string | null; quality_check_passed?: boolean | null
           quality_notes?: string | null; color?: string | null; nozzle_size_id?: string | null
-          nozzle_size_mm?: number | null; custom_layer_height?: number | null
+          nozzle_size_mm?: number | null; support_enabled?: boolean; custom_layer_height?: number | null
           custom_infill_percentage?: number | null; custom_time_multiplier?: number | null
           custom_layer_thickness?: number | null; custom_exposure_time?: number | null
           is_preorder?: boolean | null; preorder_discount_percent?: number | null

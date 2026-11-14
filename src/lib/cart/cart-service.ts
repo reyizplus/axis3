@@ -1,4 +1,5 @@
 import type { CartItem, Cart } from './types';
+import { isMissingColumnError } from '@/lib/supabase/errors';
 
 export type { CartItem } from './types';
 
@@ -132,7 +133,8 @@ export class CartService {
     const existingIndex = cart.items.findIndex(
       i => i.fileId === item.fileId &&
            i.materialId === item.materialId &&
-           i.printSettingId === item.printSettingId
+           i.printSettingId === item.printSettingId &&
+           (i.supportEnabled !== false) === (item.supportEnabled !== false)
     );
 
     let newItem: CartItem;
@@ -294,16 +296,42 @@ export class CartService {
       // Use upsert pattern instead of delete+re-insert to prevent race conditions
       const currentVersion = cart.version || 0;
 
-      const { data: existingItems } = await supabase
-        .from('cart_items')
-        .select('id, cart_version, file_id, material_id, print_setting_id')
-        .eq('cart_id', cartId);
+      // Migration 097 uygulanmadıysa `support_enabled` seçimi hata verir; bu
+      // durumda kolonsuz okumaya düşülür (seçim localStorage'da kalır).
+      const readExisting = (columns: string) =>
+        (supabase.from('cart_items') as any)
+          .select(columns)
+          .eq('cart_id', cartId);
 
-      const existingIds = new Set((existingItems || []).map((i: any) => i.id));
-      const incomingKeys = new Set(cart.items.map(i => `${i.fileId}_${i.materialId}_${i.printSettingId}`));
+      const firstRead = await readExisting(
+        'id, cart_version, file_id, material_id, print_setting_id, support_enabled'
+      );
+      let existingItems = firstRead.data;
+      if (firstRead.error && isMissingColumnError(firstRead.error, 'support_enabled')) {
+        ({ data: existingItems } = await readExisting(
+          'id, cart_version, file_id, material_id, print_setting_id'
+        ));
+      }
+
+      // Destek seçimi fiyatı değiştirdiği için satır anahtarının parçasıdır;
+      // aksi halde "destekli" ve "desteksiz" iki kalem birbirini ezer.
+      const cartKey = (
+        fileId: string | null,
+        materialId: string | null,
+        printSettingId: string | null,
+        supportEnabled: unknown
+      ) => `${fileId}_${materialId}_${printSettingId}_${supportEnabled !== false ? 1 : 0}`;
+
+      const incomingKeys = new Set(
+        cart.items.map(i => cartKey(i.fileId, i.materialId, i.printSettingId, i.supportEnabled))
+      );
 
       const itemsToDelete = (existingItems || [])
-        .filter((ei: any) => !incomingKeys.has(`${ei.file_id}_${ei.material_id}_${ei.print_setting_id}`))
+        .filter((ei: any) =>
+          !incomingKeys.has(
+            cartKey(ei.file_id, ei.material_id, ei.print_setting_id, ei.support_enabled)
+          )
+        )
         .map((ei: any) => ei.id);
 
       if (itemsToDelete.length > 0) {
@@ -311,12 +339,18 @@ export class CartService {
       }
 
       for (const item of cart.items) {
-        const matchKey = `${item.fileId}_${item.materialId}_${item.printSettingId}`;
+        const matchKey = cartKey(
+          item.fileId,
+          item.materialId,
+          item.printSettingId,
+          item.supportEnabled
+        );
         const existingMatch = (existingItems || []).find(
-          (ei: any) => `${ei.file_id}_${ei.material_id}_${ei.print_setting_id}` === matchKey
+          (ei: any) =>
+            cartKey(ei.file_id, ei.material_id, ei.print_setting_id, ei.support_enabled) === matchKey
         );
 
-        const dbItem = {
+        const dbItem: Record<string, any> = {
           cart_id: cartId,
           cart_version: currentVersion,
           file_id: item.fileId || null,
@@ -334,6 +368,7 @@ export class CartService {
           color: item.color || null,
           nozzle_size_id: item.nozzleSizeId || null,
           nozzle_size_mm: item.nozzleSizeMm || null,
+          support_enabled: item.supportEnabled !== false,
           is_preorder: item.isPreorder || false,
           preorder_discount_percent: item.preorderDiscountPercent || null,
           estimated_restock_days: item.estimatedRestockDays || 0,
@@ -345,10 +380,20 @@ export class CartService {
           delivery_days: item.deliveryDays || null,
         };
 
-        if (existingMatch) {
-          await supabase.from('cart_items').update(dbItem).eq('id', existingMatch.id);
-        } else {
-          await supabase.from('cart_items').insert(dbItem);
+        const writeRow = async (payload: Record<string, any>) =>
+          existingMatch
+            ? (supabase.from('cart_items') as any).update(payload).eq('id', existingMatch.id)
+            : (supabase.from('cart_items') as any).insert(payload);
+
+        let { error: writeError } = await writeRow(dbItem);
+        if (writeError && isMissingColumnError(writeError, 'support_enabled')) {
+          // Migration 097 uygulanmadıysa kolonu düşür: sepet çalışmaya devam
+          // etsin, destek seçimi localStorage'da kalır (varsayılan açık).
+          delete dbItem.support_enabled;
+          ({ error: writeError } = await writeRow(dbItem));
+        }
+        if (writeError) {
+          console.error('[CartService] cart_items yazılamadı:', writeError);
         }
       }
     } catch (error) {
@@ -450,6 +495,7 @@ export class CartService {
         color: dbItem.color || undefined,
         nozzleSizeId: dbItem.nozzle_size_id || undefined,
         nozzleSizeMm: dbItem.nozzle_size_mm || undefined,
+        supportEnabled: dbItem.support_enabled !== false,
         isPreorder: dbItem.is_preorder || false,
         preorderDiscountPercent: dbItem.preorder_discount_percent || null,
         estimatedRestockDays: dbItem.estimated_restock_days || 0,

@@ -124,6 +124,41 @@ describe('resolveSliceSelection', () => {
     });
   });
 
+  it('kalite modunda destek varsayılan olarak açıktır', async () => {
+    const { client } = createFakeClient({ materials: PLA, print_settings: HIGH_QUALITY });
+
+    const result = await resolveSliceSelection(client, baseInput);
+
+    expect(result.profile?.supportEnabled).toBe(true);
+  });
+
+  it('üst düzey supportEnabled=false kalite profilini de kapatır', async () => {
+    const { client } = createFakeClient({ materials: PLA, print_settings: HIGH_QUALITY });
+
+    const withSupport = await resolveSliceSelection(client, baseInput);
+    const withoutSupport = await resolveSliceSelection(client, {
+      ...baseInput,
+      supportEnabled: false,
+    });
+
+    expect(withoutSupport.profile?.supportEnabled).toBe(false);
+    // Destek fiyatı değiştirdiği için hash de değişmeli; aksi halde önbellek
+    // destekli dilimlemeyi desteksiz siparişe servis eder.
+    expect(profileHash(withoutSupport.profile!)).not.toBe(profileHash(withSupport.profile!));
+  });
+
+  it('eski istemcinin custom.supportEnabled alanını okur', async () => {
+    const { client } = createFakeClient({ materials: PLA });
+
+    const result = await resolveSliceSelection(client, {
+      materialId: 'mat-pla',
+      printSettingId: 'custom',
+      custom: { supportEnabled: false },
+    });
+
+    expect(result.profile?.supportEnabled).toBe(false);
+  });
+
   it('hız çarpanını mm/s hızına çevirir', async () => {
     const { client } = createFakeClient({ materials: PLA });
 

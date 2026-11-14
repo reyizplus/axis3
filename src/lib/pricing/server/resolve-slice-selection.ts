@@ -20,6 +20,11 @@ export interface SliceSelectionInput {
   /** UUID veya 'custom'. Boş/undefined ise kalitenin kendi değerleri kullanılır. */
   printSettingId?: string | null;
   nozzleSizeMm?: number | null;
+  /**
+   * Destek yapıları. Kalite seçiminde de özel modda da geçerlidir; verilmezse
+   * eski davranış korunur (destek açık).
+   */
+  supportEnabled?: boolean | null;
   custom?: {
     layerHeight?: number | null;
     infillPercentage?: number | null;
@@ -113,6 +118,7 @@ function numberOrNull(value: unknown): number | null {
  * - `printSettingId` verilmişse katman/doluluk/hız DB'den okunur; istemciden
  *   gelen sayılara güvenilmez.
  * - Özel modda katman/doluluk/hız çarpanı doğrulanır.
+ * - Destek seçimi üst düzey `supportEnabled` alanından gelir (varsayılan açık).
  */
 export async function resolveSliceSelection(
   client: unknown,
@@ -159,7 +165,10 @@ export async function resolveSliceSelection(
   let layerHeight = DEFAULT_LAYER_HEIGHT_MM;
   let infillPercentage = DEFAULT_INFILL_PERCENTAGE;
   let printSpeed = DEFAULT_PRINT_SPEED_MM_S;
-  let supportEnabled = true;
+  // Üst düzey destek seçimi her iki modda da geçerlidir; eski istemciler
+  // göndermediğinde davranış değişmesin diye varsayılan açıktır.
+  const supportEnabled =
+    (input.supportEnabled ?? input.custom?.supportEnabled) !== false;
 
   if (isCustom) {
     const custom = input.custom ?? {};
@@ -186,7 +195,6 @@ export async function resolveSliceSelection(
         SPEED_MULTIPLIER_MAX,
         'Hız çarpanı'
       );
-    supportEnabled = custom.supportEnabled ?? true;
   } else {
     const printSetting = await selectOne(
       client,

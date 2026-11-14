@@ -18,7 +18,7 @@ import { PricingEngine, isSlicingEnabled } from '@/lib/pricing';
 import { normalizeVatRate } from '@/lib/pricing/core';
 import type { PriceBreakdown as EngineBreakdown } from '@/lib/pricing/types';
 import { calculateOrderTotals, hasPriceDrift } from '@/lib/services/order-totals';
-import { isMissingFunctionError } from '@/lib/supabase/errors';
+import { isMissingColumnError, isMissingFunctionError } from '@/lib/supabase/errors';
 import { getCachedAnalysis, saveAnalysis } from '@/lib/pricing/server/analysis-cache';
 import {
   resolveSliceSelection,
@@ -34,6 +34,8 @@ export interface OrderItemInput {
   color?: string | null;
   nozzleSizeId?: string | null;
   nozzleSizeMm?: number | null;
+  /** Destek yapıları üretilsin mi? Önizlemedeki seçimle aynı olmalı. */
+  supportEnabled?: boolean | null;
   printSettingId?: string | null;
   printSettingName?: string | null;
   isPreorder?: boolean;
@@ -146,6 +148,7 @@ interface ResolvedItem {
   color: string;
   nozzleSizeId: string | null;
   nozzleSizeMm: number | null;
+  supportEnabled: boolean;
   printSettingId: string | null;
   printSettingName: string | null;
   isPreorder: boolean;
@@ -545,13 +548,15 @@ export async function createOrder(input: CreateOrderInput): Promise<CreatedOrder
         materialId: material.id,
         printSettingId: item.printSettingId ?? null,
         nozzleSizeMm: item.nozzleSizeMm ?? null,
+        // Önizleme ile aynı seçim: destek kapatıldıysa sipariş de desteksiz
+        // dilimlenir, aksi halde profil hash'i ayrışır ve fiyat sapması olur.
+        supportEnabled: item.supportEnabled !== false,
         custom: {
           layerHeight: item.customLayerHeight ?? null,
           infillPercentage: item.customInfillPercentage ?? null,
           // İstemci hız çarpanını `customTimeMultiplier = 1 / hız` olarak
           // gönderiyor; dilimleyici mm/s beklediği için geri çeviriyoruz.
           speedMultiplier: speedMultiplierFromTimeMultiplier(item.customTimeMultiplier),
-          supportEnabled: true,
         },
       });
     } catch (error) {
@@ -608,6 +613,7 @@ export async function createOrder(input: CreateOrderInput): Promise<CreatedOrder
       nozzleSizeMm: item.nozzleSizeMm ?? undefined,
       timeMultiplier: printSettings.timeMultiplier,
       infillPercentage: printSettings.infillPercentage,
+      supportEnabled: item.supportEnabled !== false,
       slicerProfileHash,
       preorderDiscountPercent: preorder.isPreorder ? preorder.discountPercent : null,
     });
@@ -645,6 +651,7 @@ export async function createOrder(input: CreateOrderInput): Promise<CreatedOrder
       color: item.color || 'Natural',
       nozzleSizeId: item.nozzleSizeId ?? null,
       nozzleSizeMm: item.nozzleSizeMm ?? null,
+      supportEnabled: item.supportEnabled !== false,
       printSettingId: printSettings.printSettingId,
       printSettingName: printSettings.printSettingName,
       isPreorder: preorder.isPreorder,
@@ -765,35 +772,48 @@ export async function createOrder(input: CreateOrderInput): Promise<CreatedOrder
 
   try {
     if (resolvedItems.length) {
-      const { error: itemsError } = await (supabase.from('order_items') as any).insert(
-        resolvedItems.map((item) => ({
-          id: item.id,
-          order_id: order.id,
-          file_id: item.fileId,
-          filename: item.filename,
-          material_id: item.materialId,
-          material_name: item.materialName,
-          print_setting_id: item.printSettingId,
-          print_setting_name: item.printSettingName,
-          volume_cm3: item.volumeCm3,
-          quantity: item.quantity,
-          unit_price: item.unitPrice,
-          subtotal: item.totalPrice,
-          color: item.color,
-          estimated_print_hours: round(item.totalEstimatedHours, 2),
-          price_breakdown: item.priceBreakdown,
-          is_preorder: item.isPreorder,
-          preorder_discount_percent: item.preorderDiscountPercent,
-          nozzle_size_id: item.nozzleSizeId,
-          nozzle_size_mm: item.nozzleSizeMm,
-          custom_layer_height: item.customLayerHeight,
-          custom_infill_percentage: item.customInfillPercentage,
-          custom_time_multiplier: item.customTimeMultiplier,
-          custom_layer_thickness: item.customLayerThickness,
-          custom_exposure_time: item.customExposureTime,
-          estimated_restock_days: item.estimatedRestockDays,
-        }))
-      );
+      const orderItemRows = resolvedItems.map((item) => ({
+        id: item.id,
+        order_id: order.id,
+        file_id: item.fileId,
+        filename: item.filename,
+        material_id: item.materialId,
+        material_name: item.materialName,
+        print_setting_id: item.printSettingId,
+        print_setting_name: item.printSettingName,
+        volume_cm3: item.volumeCm3,
+        quantity: item.quantity,
+        unit_price: item.unitPrice,
+        subtotal: item.totalPrice,
+        color: item.color,
+        estimated_print_hours: round(item.totalEstimatedHours, 2),
+        price_breakdown: item.priceBreakdown,
+        is_preorder: item.isPreorder,
+        preorder_discount_percent: item.preorderDiscountPercent,
+        nozzle_size_id: item.nozzleSizeId,
+        nozzle_size_mm: item.nozzleSizeMm,
+        support_enabled: item.supportEnabled,
+        custom_layer_height: item.customLayerHeight,
+        custom_infill_percentage: item.customInfillPercentage,
+        custom_time_multiplier: item.customTimeMultiplier,
+        custom_layer_thickness: item.customLayerThickness,
+        custom_exposure_time: item.customExposureTime,
+        estimated_restock_days: item.estimatedRestockDays,
+      }));
+
+      let { error: itemsError } = await (supabase.from('order_items') as any).insert(orderItemRows);
+
+      // Migration 097 uygulanmadıysa kolonu düşürüp siparişi yine kaydet.
+      if (itemsError && isMissingColumnError(itemsError, 'support_enabled')) {
+        const rowsWithoutSupport = orderItemRows.map((row) => {
+          const copy: Record<string, unknown> = { ...row };
+          delete copy.support_enabled;
+          return copy;
+        });
+        ({ error: itemsError } = await (supabase.from('order_items') as any).insert(
+          rowsWithoutSupport
+        ));
+      }
 
       if (itemsError) {
         throw new OrderCreationError(`3D baskı ürünleri kaydedilemedi: ${itemsError.message}`, 500);

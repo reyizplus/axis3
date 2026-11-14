@@ -127,6 +127,7 @@ export default function CheckoutPage() {
             color: item.color ?? null,
             nozzleSizeId: item.nozzleSizeId ?? null,
             nozzleSizeMm: item.nozzleSizeMm ?? null,
+            supportEnabled: item.supportEnabled !== false,
             printSettingId: item.printSettingId && item.printSettingId !== 'custom' ? item.printSettingId : null,
             printSettingName: item.printSettingName ?? null,
             isPreorder: item.isPreorder ?? false,

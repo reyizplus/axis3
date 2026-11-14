@@ -82,6 +82,11 @@ export default function UploadDetailPage() {
   const [selectedQuality, setSelectedQuality] = useState<PrintSetting | null>(null);
   const [quantity, setQuantity] = useState(1);
   const [selectedColor, setSelectedColor] = useState('Natural');
+  /**
+   * Destek yapıları müşteri seçimidir (FDM). Kapatıldığında dilimleme desteği
+   * üretmez; gram, süre ve destek ayıklama işçiliği buna göre düşer.
+   */
+  const [supportEnabled, setSupportEnabled] = useState(true);
 
   const [pricingResult, setPricingResult] = useState<PricingResult | null>(null);
   const [isCalculating, setIsCalculating] = useState(false);
@@ -200,6 +205,7 @@ export default function UploadDetailPage() {
         color: selectedColor,
         nozzleSizeId: selectedNozzle?.id,
         nozzleSizeMm: selectedNozzle?.size_mm,
+        supportEnabled,
         isPreorder: isPreorderItem,
         preorderDiscountPercent: preorderDiscount,
         estimatedRestockDays: restockDays,
@@ -275,6 +281,8 @@ export default function UploadDetailPage() {
     setSelectedNozzle(null);
     setSelectedQuality(null);
     setInventoryCheck(null);
+    // Reçine destekleri zorunludur; FDM'den geçişte kullanıcı seçimi taşınmasın.
+    setSupportEnabled(true);
     (async () => {
       const supabase = createClient();
       const isSla = selectedMaterial.technology === 'SLA';
@@ -395,6 +403,7 @@ export default function UploadDetailPage() {
           printSpeedModifier: selectedMaterial.printSpeedModifier,
           timeMultiplier,
           infillPercentage,
+          supportEnabled,
         };
 
         // Reçine bilinçli olarak hacim tahmininde kalır (K3): SLA dilimleyici
@@ -427,12 +436,12 @@ export default function UploadDetailPage() {
             materialId: selectedMaterial.id,
             printSettingId: advancedMode ? 'custom' : selectedQuality?.id,
             nozzleSizeMm: selectedNozzle?.size_mm ?? null,
+            supportEnabled,
             custom: advancedMode
               ? {
                   layerHeight: customLayerHeight,
                   infillPercentage: customInfill,
                   speedMultiplier: customSpeed,
-                  supportEnabled: true,
                 }
               : null,
           }),
@@ -504,7 +513,7 @@ export default function UploadDetailPage() {
       controller.abort();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fileData?.id, selectedMaterial?.id, selectedColor, selectedNozzle?.id, selectedQuality?.id, quantity, advancedMode, customLayerHeight, customInfill, customSpeed, customLayerThickness, customExposureTime, fileId, retryToken]);
+  }, [fileData?.id, selectedMaterial?.id, selectedColor, selectedNozzle?.id, selectedQuality?.id, quantity, advancedMode, customLayerHeight, customInfill, customSpeed, customLayerThickness, customExposureTime, supportEnabled, fileId, retryToken]);
 
   if (loading) {
     return (
@@ -698,6 +707,20 @@ export default function UploadDetailPage() {
               </div>
               {!advancedMode && (
                 <QualitySelector selectedSettingId={selectedQuality?.id} onSelect={setSelectedQuality} technology={selectedMaterial?.technology} disabled={!selectedMaterial} nozzleSizeId={selectedNozzle?.id} />
+              )}
+              {selectedMaterial && selectedMaterial.technology !== 'SLA' && (
+                <div className="mt-5 flex items-center justify-between gap-4 p-4 rounded-xl border-2 border-border/40 bg-muted/20">
+                  <div className="flex items-start gap-3">
+                    <Layers className="h-5 w-5 text-muted-foreground mt-0.5" />
+                    <div>
+                      <p className="font-medium text-sm">Destek Yapıları</p>
+                      <p className="text-xs text-muted-foreground">
+                        Çıkıntılar için geçici destek basılır. Kapatırsanız destek gramı ve destek ayıklama işçiliği fiyata girmez.
+                      </p>
+                    </div>
+                  </div>
+                  <Switch checked={supportEnabled} onCheckedChange={setSupportEnabled} />
+                </div>
               )}
             </motion.div>
 
