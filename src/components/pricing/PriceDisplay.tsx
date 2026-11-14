@@ -226,17 +226,12 @@ export function PriceDisplay({
               ? `₺${(displayPrice / quantity).toFixed(2)} / adet · KDV hariç`
               : 'Toplam fiyat · KDV hariç'}
           </div>
-          {pricing.breakdown.vatRate > 0 ? (
-            <div className="mt-1 text-xs text-muted-foreground">
-              + KDV (%{Math.round(pricing.breakdown.vatRate * 100)}): ₺
-              {pricing.breakdown.vatAmount.toFixed(2)} · KDV dahil ₺
-              {pricing.breakdown.totalWithVat.toFixed(2)}
-            </div>
-          ) : (
-            <div className="mt-1 text-xs text-muted-foreground">
-              KDV hesaplanacak
-            </div>
-          )}
+          {/* Fiyatın altında ürün ve destek gramı: destek toplam gramın içindedir. */}
+          <div className="mt-1 text-xs text-muted-foreground">
+            Ürün: {pricing.breakdown.material.filamentGrams.toFixed(2)} g
+            {' · '}
+            Destek: {pricing.breakdown.material.supportGrams.toFixed(2)} g
+          </div>
           {isPreorder ? (() => {
             const da = pricing.breakdown.preorderDiscount;
             return da != null && da > 0 ? (
