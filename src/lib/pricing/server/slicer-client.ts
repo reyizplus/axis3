@@ -16,6 +16,8 @@
  */
 
 import type { SliceProfileV1 } from './slicer-profile';
+import { parseGcodePreviewBinary, type GcodePreviewMeta } from '@/lib/preview/format';
+import { gunzipSync } from 'node:zlib';
 
 /** Dilimleme sonucunun fiyatlandırmada kullanılan özeti. */
 export interface SliceStats {
@@ -36,6 +38,22 @@ export interface SliceStats {
   durationMs: number;
   /** Sonucu üreten motor, ör. `prusaslicer-2.5.0`. */
   engine: string;
+}
+
+/**
+ * Önizleme isteğinin sonucu.
+ *
+ * `gzip` doluysa ikili önizleme depoya yazılabilir; `null` ise dilimleyici
+ * fiyat özetini döndürmüş ama önizlemeyi üretememiştir (fiyat yine geçerli).
+ */
+export interface SlicePreviewResult {
+  stats: SliceStats;
+  /** gzip'lenmiş önizleme ikilisi; `parseGcodePreviewBinary` ile çözülür. */
+  gzip: Buffer | null;
+  /** Önizleme başlığı (varsa). */
+  meta: GcodePreviewMeta | null;
+  /** Önizleme yoksa nedeni; görüntüleyici STL görünümüne düşer. */
+  previewError: string | null;
 }
 
 /** Sidecar ayakta değil / bağlantı kurulamıyor / kuyruk dolu (503). */
@@ -238,31 +256,33 @@ function toSliceStats(
 }
 
 /**
- * STL'i sidecar dilimleyiciye gönderir ve gerçek gram/süre özetini döner.
+ * İsteği (gerekirse bir kez yeniden deneyerek) gönderir.
  *
- * - 4xx (401/422/400 …) → `SlicerRejectedError`, retry yok.
- * - 503 veya bağlantı hatası → 300 ms sonra **bir kez** retry; yine olmazsa
- *   `SlicerUnavailableError`.
- * - 504 veya abort → `SlicerTimeoutError`.
+ * Dönen yanıt yalnızca `ok` (2xx) olduğunda döner; tüm başarısızlık
+ * sınıflandırması burada yapılır ki `sliceModel` ile `sliceModelPreview`
+ * aynı davranışı paylaşsın.
  */
-export async function sliceModel(
+async function postSlice(
   stl: Buffer,
   filename: string,
   profile: SliceProfileV1,
-  opts?: { timeoutMs?: number }
-): Promise<SliceStats> {
+  options: { timeoutMs?: number; preview?: boolean }
+): Promise<{ response: Response; startedAt: number }> {
   const url = `${resolveBaseUrl()}/slice`;
-  const timeoutMs = opts?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const startedAt = performance.now();
 
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
+    const form = buildSliceForm(stl, filename, profile);
+    if (options.preview) form.append('preview', '1');
+
     let response: Response;
 
     try {
       response = await fetch(url, {
         method: 'POST',
         headers: requestHeaders(),
-        body: buildSliceForm(stl, filename, profile),
+        body: form,
         signal: AbortSignal.timeout(timeoutMs),
       });
     } catch (error) {
@@ -282,18 +302,7 @@ export async function sliceModel(
       );
     }
 
-    if (response.ok) {
-      const raw = await readBody(response);
-      let payload: unknown;
-      try {
-        payload = JSON.parse(raw);
-      } catch {
-        throw new SlicerRejectedError(
-          `Dilimleyici bozuk JSON döndü (${response.status}): ${snippet(raw)}`
-        );
-      }
-      return toSliceStats(payload, profile, Math.round(performance.now() - startedAt));
-    }
+    if (response.ok) return { response, startedAt };
 
     const body = await readBody(response);
 
@@ -323,6 +332,114 @@ export async function sliceModel(
 
   // Döngü yalnızca yukarıdaki dallardan biriyle biter; savunma amaçlı.
   throw new SlicerUnavailableError(`Dilimleyiciye ulaşılamadı (${url})`);
+}
+
+/**
+ * STL'i sidecar dilimleyiciye gönderir ve gerçek gram/süre özetini döner.
+ *
+ * - 4xx (401/422/400 …) → `SlicerRejectedError`, retry yok.
+ * - 503 veya bağlantı hatası → 300 ms sonra **bir kez** retry; yine olmazsa
+ *   `SlicerUnavailableError`.
+ * - 504 veya abort → `SlicerTimeoutError`.
+ */
+export async function sliceModel(
+  stl: Buffer,
+  filename: string,
+  profile: SliceProfileV1,
+  opts?: { timeoutMs?: number }
+): Promise<SliceStats> {
+  const { response, startedAt } = await postSlice(stl, filename, profile, {
+    timeoutMs: opts?.timeoutMs,
+    preview: false,
+  });
+
+  const raw = await readBody(response);
+  let payload: unknown;
+  try {
+    payload = JSON.parse(raw);
+  } catch {
+    throw new SlicerRejectedError(
+      `Dilimleyici bozuk JSON döndü (${response.status}): ${snippet(raw)}`
+    );
+  }
+
+  return toSliceStats(payload, profile, Math.round(performance.now() - startedAt));
+}
+
+/** gzip sihirli baytları; önizleme gövdesinin sıkıştırılmış olup olmadığını belirler. */
+function isGzip(buffer: Buffer): boolean {
+  return buffer.length >= 2 && buffer[0] === 0x1f && buffer[1] === 0x8b;
+}
+
+/**
+ * Dilimler ve fiyat özetiyle birlikte 3B önizleme ikilisini döner.
+ *
+ * Önizleme ikincil bir çıktıdır: üretilemezse `gzip`/`meta` null olur ama
+ * `stats` yine gerçek dilimleme sonucudur. Böylece önizleme hatası sipariş
+ * akışını kilitlemez.
+ */
+export async function sliceModelPreview(
+  stl: Buffer,
+  filename: string,
+  profile: SliceProfileV1,
+  opts?: { timeoutMs?: number }
+): Promise<SlicePreviewResult> {
+  const { response, startedAt } = await postSlice(stl, filename, profile, {
+    timeoutMs: opts?.timeoutMs,
+    preview: true,
+  });
+
+  const contentType = response.headers.get('content-type') ?? '';
+  const measuredDurationMs = Math.round(performance.now() - startedAt);
+
+  if (contentType.includes('application/octet-stream')) {
+    const body = Buffer.from(await response.arrayBuffer());
+
+    let meta: GcodePreviewMeta;
+    try {
+      const raw = isGzip(body) ? gunzipSync(body) : body;
+      meta = parseGcodePreviewBinary(new Uint8Array(raw.subarray(0))).meta;
+    } catch (error) {
+      throw new SlicerRejectedError(
+        `Dilimleyici geçersiz önizleme döndürdü: ${describeError(error)}`
+      );
+    }
+
+    const stats = toSliceStats(
+      { ...meta.stats, durationMs: measuredDurationMs, engine: meta.engine },
+      profile,
+      measuredDurationMs
+    );
+
+    return {
+      stats,
+      // Depoya her zaman gzip yazılır; gövde sıkıştırılmamış geldiyse burada
+      // yeniden sıkıştırmak yerine olduğu gibi bırakılır ve çağıran taraf
+      // `meta.engine` üzerinden karar verir.
+      gzip: isGzip(body) ? body : null,
+      meta,
+      previewError: null,
+    };
+  }
+
+  const raw = await readBody(response);
+  let payload: unknown;
+  try {
+    payload = JSON.parse(raw);
+  } catch {
+    throw new SlicerRejectedError(
+      `Dilimleyici bozuk JSON döndü (${response.status}): ${snippet(raw)}`
+    );
+  }
+
+  const stats = toSliceStats(payload, profile, measuredDurationMs);
+  const record = payload as Record<string, unknown>;
+  const previewError =
+    typeof record.previewError === 'string' && record.previewError.trim() !== ''
+      ? record.previewError
+      : 'Dilimleyici önizleme üretmedi';
+
+  return { stats, gzip: null, meta: null, previewError };
 }
 
 /**

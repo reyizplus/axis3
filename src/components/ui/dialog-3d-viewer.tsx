@@ -10,26 +10,14 @@
 
 'use client';
 
-import dynamic from 'next/dynamic';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Badge } from '@/components/ui/badge';
 
-// Dynamically import ModelViewer to reduce initial bundle size
-const ModelViewer = dynamic(
-  () => import('@/components/upload/ModelViewer').then((mod) => mod.ModelViewer),
-  {
-    ssr: false,
-    loading: () => (
-      <div className="flex items-center justify-center h-full min-h-[300px]">
-        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
-      </div>
-    ),
-  }
-);
 import { Separator } from '@/components/ui/separator';
 import { Accordion, AccordionItem } from '@/components/ui/accordion';
 import { Box, Ruler, Layers, ChevronDown } from 'lucide-react';
 import { useEffect, useState } from 'react';
+import { SlicerPreview, type SlicePreviewSelection } from '@/components/preview/SlicerPreview';
 
 interface Dialog3DViewerProps {
   open: boolean;
@@ -49,6 +37,11 @@ interface Dialog3DViewerProps {
   };
   materialName?: string;
   printSettingName?: string;
+  /**
+   * Dilimleme seçimi. Verilirse gerçek takım yolu önizlemesi yüklenir;
+   * verilmezse (veya SLA'da) yalnızca STL gösterilir.
+   */
+  slice?: SlicePreviewSelection | null;
 }
 
 export function Dialog3DViewer({
@@ -60,6 +53,7 @@ export function Dialog3DViewer({
   specifications,
   materialName,
   printSettingName,
+  slice,
 }: Dialog3DViewerProps) {
   const [specsOpen, setSpecsOpen] = useState(false);
 
@@ -97,7 +91,12 @@ export function Dialog3DViewer({
         <div className="flex-1 flex flex-col lg:grid lg:grid-cols-3 gap-2 sm:gap-4 min-h-0">
           {/* 3D Viewer - Full height on mobile */}
           <div className="flex-1 lg:col-span-2 min-h-[300px] sm:min-h-[400px] lg:min-h-0 flex flex-col">
-            <ModelViewer url={modelUrl} color={color} className="flex-1 min-h-0" />
+            <SlicerPreview
+              selection={slice}
+              modelUrl={modelUrl}
+              color={color}
+              className="flex-1 min-h-0"
+            />
           </div>
 
           {/* Specifications Sidebar - Collapsible on mobile, always visible on desktop */}

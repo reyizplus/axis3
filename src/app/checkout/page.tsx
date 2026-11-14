@@ -610,7 +610,21 @@ export default function CheckoutPage() {
         {selectedItem && (
           <Dialog3DViewer open={viewerOpen} onOpenChange={setViewerOpen} modelUrl={modelUrl}
             fileName={selectedItem.fileName} color={selectedItem.color} materialName={selectedItem.materialName}
-            printSettingName={selectedItem.printSettingName} specifications={fileSpecs} />
+            printSettingName={selectedItem.printSettingName} specifications={fileSpecs}
+            slice={{
+              fileId: selectedItem.fileId,
+              materialId: selectedItem.materialId,
+              printSettingId: selectedItem.printSettingId,
+              nozzleSizeMm: selectedItem.nozzleSizeMm ?? null,
+              supportEnabled: selectedItem.supportEnabled !== false,
+              customLayerHeight: selectedItem.customLayerHeight ?? null,
+              customInfill: selectedItem.customInfillPercentage ?? null,
+              // Sepette süre çarpanı saklanır; önizleme API'si hız çarpanı bekler.
+              customSpeed: selectedItem.customTimeMultiplier
+                ? 1 / selectedItem.customTimeMultiplier
+                : null,
+              technology: selectedItem.technology ?? null,
+            }} />
         )}
 
         <div className="h-4" />

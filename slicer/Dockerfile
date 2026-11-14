@@ -14,7 +14,7 @@ WORKDIR /slicer
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 
-COPY server.mjs gcode-summary.mjs ./
+COPY server.mjs gcode-summary.mjs gcode-preview.mjs ./
 
 # Varsayilanlar compose tarafindan da verilir; burada yalnizca guvenli taban.
 ENV PORT=8000 SLICER_MAX_CONCURRENCY=2 SLICER_TIMEOUT_MS=180000

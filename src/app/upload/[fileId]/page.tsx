@@ -851,6 +851,17 @@ export default function UploadDetailPage() {
             color={selectedColor}
             materialName={selectedMaterial?.name}
             printSettingName={selectedQuality?.name}
+            slice={selectedMaterial ? {
+              fileId,
+              materialId: selectedMaterial.id,
+              printSettingId: advancedMode ? 'custom' : selectedQuality?.id ?? null,
+              nozzleSizeMm: selectedNozzle?.size_mm ?? null,
+              supportEnabled,
+              customLayerHeight: advancedMode ? customLayerHeight : null,
+              customInfill: advancedMode ? customInfill : null,
+              customSpeed: advancedMode ? customSpeed : null,
+              technology: selectedMaterial.technology,
+            } : null}
             specifications={{ volume: fileData.volume_cm3, surfaceArea: fileData.surface_area_cm2, dimensions: { x: fileData.bounding_box_x, y: fileData.bounding_box_y, z: fileData.bounding_box_z }, triangleCount: fileData.triangle_count }}
           />
         )}

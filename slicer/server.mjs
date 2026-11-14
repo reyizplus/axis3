@@ -8,6 +8,11 @@
  *   GET  /health → { ok, engine, queueDepth, busy }
  *   POST /slice  → { ok, grams, supportGrams, printSeconds, layerCount, filamentMm, durationMs, engine }
  *
+ * `preview=1` alanı gönderilirse, fiyat özetine ek olarak 3B önizleme ikilisi
+ * döner (gzip'li; biçim `gcode-preview.mjs`). Bu durumda başarılı yanıt JSON
+ * değil `application/octet-stream` olur; önizleme üretilemezse fiyat akışı
+ * bozulmasın diye normal JSON yanıtına `previewError` alanı eklenir.
+ *
  * Hiçbir adımda uydurma sayı üretilmez; ölçülemeyen değer hata olarak döner.
  */
 import { spawn } from 'node:child_process';
@@ -16,10 +21,12 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { gzipSync } from 'node:zlib';
 
 import Busboy from 'busboy';
 
 import { parseGcodeSummary } from './gcode-summary.mjs';
+import { buildGcodePreview, encodeGcodePreview } from './gcode-preview.mjs';
 
 const ENGINE = 'prusaslicer-2.5.0';
 const PORT = readPositiveInt('PORT', 8000);
@@ -274,6 +281,16 @@ function sendJson(res, status, payload, extraHeaders = {}) {
   res.end(body);
 }
 
+/** İkili önizleme yanıtı (gzip). */
+function sendBinary(res, status, body, extraHeaders = {}) {
+  res.writeHead(status, {
+    'content-type': 'application/octet-stream',
+    'content-length': body.length,
+    ...extraHeaders,
+  });
+  res.end(body);
+}
+
 function tokenMatches(provided) {
   if (TOKEN === '') return true;
   if (typeof provided !== 'string' || provided === '') return false;
@@ -292,7 +309,7 @@ class BadRequestError extends Error {}
  * Alanlar: `model` (STL dosyası), `profile` (JSON string).
  *
  * @param {import('node:http').IncomingMessage} req
- * @returns {Promise<{ model: Buffer, filename: string, profile: unknown }>}
+ * @returns {Promise<{ model: Buffer, filename: string, profile: unknown, preview: boolean }>}
  */
 function readMultipart(req) {
   return new Promise((resolve, reject) => {
@@ -311,6 +328,7 @@ function readMultipart(req) {
     let model = null;
     let filename = 'model.stl';
     let profileRaw = null;
+    let preview = false;
     let fileTooLarge = false;
     let failed = false;
 
@@ -342,6 +360,7 @@ function readMultipart(req) {
 
     busboy.on('field', (name, value) => {
       if (name === 'profile') profileRaw = value;
+      if (name === 'preview') preview = value === '1' || value === 'true';
     });
 
     busboy.on('error', () => fail(new BadRequestError('multipart gövdesi bozuk')));
@@ -370,7 +389,7 @@ function readMultipart(req) {
         return;
       }
 
-      resolve({ model, filename, profile });
+      resolve({ model, filename, profile, preview });
     });
 
     req.on('aborted', () => fail(new BadRequestError('istek iptal edildi')));
@@ -493,6 +512,28 @@ async function handleSlice(req, res) {
       return;
     }
 
+    let previewError = null;
+    if (payload.preview) {
+      try {
+        const preview = buildGcodePreview(gcode);
+        const binary = encodeGcodePreview(preview);
+        // Depoda ve ağda yer kaplamasın diye sıkıştırılır; istemci
+        // `DecompressionStream` ile açar.
+        const gzipped = gzipSync(binary, { level: 6 });
+
+        sendBinary(res, 200, gzipped, {
+          'x-preview-encoding': 'gzip',
+          'x-preview-engine': ENGINE,
+          'cache-control': 'no-store',
+        });
+        return;
+      } catch (error) {
+        // Önizleme ikincil bir çıktıdır; üretilememesi fiyatı engellemez.
+        previewError = error instanceof Error ? error.message : String(error);
+        console.error('[slicer] önizleme üretilemedi:', error);
+      }
+    }
+
     sendJson(res, 200, {
       ok: true,
       grams: summary.grams,
@@ -502,6 +543,7 @@ async function handleSlice(req, res) {
       filamentMm: summary.filamentMm,
       durationMs: Date.now() - startedAt,
       engine: ENGINE,
+      ...(previewError ? { previewError } : {}),
     });
   } catch (error) {
     console.error('[slicer] dilimleme hatası:', error);
