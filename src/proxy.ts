@@ -14,6 +14,11 @@ const protectedRoutes = [
 // Auth routes that should redirect to dashboard if user is already logged in
 const authRoutes = ['/login', '/register', '/forgot-password', '/reset-password', '/verify'];
 
+// Marketing (tanıtım) sayfaları. Giriş yapmış kullanıcı bu sayfalara gelirse
+// doğrudan panele alınır: mağaza, sepet, ödeme, sipariş takibi ve yasal metinler
+// herkese açık kalır (ödeme akışı ve footer bağlantıları bozulmasın).
+const marketingRoutes = ['/hizmetler', '/hakkimizda', '/malzemeler', '/iletisim', '/blog'];
+
 // Routes to exclude from logging (health checks, monitoring, etc.)
 const excludedFromLogging = [
   '/api/health',
@@ -226,6 +231,19 @@ function logRequest(pathname: string, user: any | null, ip: string, action?: str
 }
 
 /**
+ * Yönlendirme yanıtı üretirken `updateSession`'ın tazelediği oturum çerezlerini
+ * taşır. Çerezler kopyalanmazsa tarayıcı eski (süresi geçmiş) token ile devam
+ * eder ve kullanıcı bir sonraki istekte oturumunu kaybetmiş gibi görünür.
+ */
+function redirectWithSession(url: URL, sessionResponse: NextResponse): NextResponse {
+  const redirectResponse = NextResponse.redirect(url);
+  for (const cookie of sessionResponse.cookies.getAll()) {
+    redirectResponse.cookies.set(cookie);
+  }
+  return redirectResponse;
+}
+
+/**
  * Blocked IP enforcement.
  *
  * `blocked_ips` was previously only a table admins could edit — nothing read
@@ -377,6 +395,18 @@ export async function proxy(request: NextRequest, event: NextFetchEvent) {
   // Check if current path is auth route
   const isAuthRoute = authRoutes.some((route) => pathname.startsWith(route));
 
+  // Ana sayfa ve pazarlama sayfaları: giriş yapmış kullanıcı doğrudan panele gider.
+  const isMarketingRoute =
+    pathname === '/' ||
+    marketingRoutes.some((route) => pathname === route || pathname.startsWith(`${route}/`));
+
+  if (isMarketingRoute && user) {
+    if (!shouldSkipLogging) {
+      logRequest(pathname, user, clientIP, 'REDIRECT to /dashboard (authenticated visitor)');
+    }
+    return redirectWithSession(new URL('/dashboard', request.url), response);
+  }
+
   // Redirect to login if accessing protected route without authentication
   if (isProtectedRoute && !user) {
     if (!shouldSkipLogging) {
@@ -384,7 +414,7 @@ export async function proxy(request: NextRequest, event: NextFetchEvent) {
     }
     const redirectUrl = new URL('/login', request.url);
     redirectUrl.searchParams.set('redirect', pathname);
-    return NextResponse.redirect(redirectUrl);
+    return redirectWithSession(redirectUrl, response);
   }
 
   // Redirect to dashboard if accessing auth routes while authenticated
@@ -392,7 +422,7 @@ export async function proxy(request: NextRequest, event: NextFetchEvent) {
     if (!shouldSkipLogging) {
       logRequest(pathname, user, clientIP, 'REDIRECT to /dashboard (already authenticated)');
     }
-    return NextResponse.redirect(new URL('/dashboard', request.url));
+    return redirectWithSession(new URL('/dashboard', request.url), response);
   }
 
   return response;
