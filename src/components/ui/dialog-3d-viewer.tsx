@@ -9,7 +9,13 @@
 
 'use client';
 
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 import { Box } from 'lucide-react';
 import { useEffect } from 'react';
 import {
@@ -81,7 +87,10 @@ export function Dialog3DViewer({
             <Box className="h-5 w-5" />
             3D Model Önizleme
           </DialogTitle>
-          <p className="truncate text-sm text-muted-foreground">{fileName}</p>
+          {/* Radix, DialogContent için bir açıklama bekler: eksikse
+              "Missing Description or aria-describedby" uyarısı basılır.
+              Dosya adı zaten erişilebilir açıklama görevi görüyor. */}
+          <DialogDescription className="truncate">{fileName}</DialogDescription>
         </DialogHeader>
 
         <PreviewWorkspace
