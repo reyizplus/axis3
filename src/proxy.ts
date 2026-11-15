@@ -1,6 +1,7 @@
 import { type NextFetchEvent, type NextRequest, NextResponse } from 'next/server';
 import { updateSession } from '@/lib/supabase/proxy';
 import { detectDeviceType } from '@/lib/utils/device-detection';
+import { appendActivityLog, appendLog } from '@/lib/logger';
 
 // Protected routes that require authentication
 const protectedRoutes = [
@@ -163,6 +164,29 @@ async function sendActivityLog(pathname: string, user: any | null, ip: string, r
   const deviceType = detectDeviceType(userAgent);
   const resolvedIP = ip && ip !== 'unknown' ? ip : null;
   const config = getSupabaseRestConfig();
+
+  // Dosya tabanlı loglar (admin panelindeki "Uygulama" sekmesi) tek yerden,
+  // burada yazılır. Daha önce istemci tarayıcıdaki IP tracker her isteği
+  // `user_id: null` ile gönderdiği için tüm kayıtlar "Misafir" görünüyordu.
+  // Proxy, oturumu sunucuda doğruladığı için kimlik her zaman doğrudur.
+  const timestamp = new Date().toISOString();
+  const safePathname = pathname.replace(/[^\x20-\x7E]/g, '?');
+  const userLabel = user
+    ? `${user.id}${user.email ? ` (${user.email})` : ''}`
+    : 'guest';
+
+  appendLog(`[${timestamp}] ${safePathname} | IP: ${ip} | User: ${userLabel}`);
+  appendActivityLog({
+    type: user ? 'user_activity' : 'ip_activity',
+    user_id: user?.id ?? null,
+    user_email: user?.email || '',
+    user_name: user?.user_metadata?.full_name || user?.email || '',
+    page_url: pathname,
+    ip_address: resolvedIP,
+    user_agent: userAgent,
+    device_type: deviceType,
+    timestamp,
+  });
 
   if (user) {
     if (!config) {

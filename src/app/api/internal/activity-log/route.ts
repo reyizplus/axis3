@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { appendActivityLog, appendLog } from '@/lib/logger';
 import { createClient, createServiceClient } from '@/lib/supabase/server';
 
 export const runtime = 'nodejs';
@@ -18,7 +17,7 @@ function getRequestIP(request: NextRequest): string {
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { user_id, user_email, user_name, page_url, ip_address, user_agent, device_type } = body;
+    const { user_id, page_url, ip_address, user_agent, device_type } = body;
 
     if (!user_id || !page_url) {
       return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
@@ -26,20 +25,8 @@ export async function POST(request: NextRequest) {
 
     const resolvedIP = (ip_address && ip_address !== 'unknown') ? ip_address : getRequestIP(request);
 
-    appendActivityLog({
-      user_id,
-      user_email: user_email || '',
-      user_name: user_name || '',
-      page_url,
-      ip_address: resolvedIP,
-      user_agent: user_agent || null,
-      device_type: device_type || 'unknown',
-    });
-
-    // "Uygulama" log sekmesi bu dosyayı okur; daha önce hiçbir yer yazmadığı için boş görünüyordu.
-    appendLog(
-      `[${new Date().toISOString()}] ${page_url} | IP: ${resolvedIP} | User: ${String(user_id).substring(0, 8)}${user_email ? ` (${user_email})` : ''}`
-    );
+    // Not: dosya tabanlı loglar (app.log / activity.log) proxy'de yazılıyor.
+    // Burada yalnızca veritabanı kayıtları oluşturulur.
 
     try {
       const supabase = await createClient();

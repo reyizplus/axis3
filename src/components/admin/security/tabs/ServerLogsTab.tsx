@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback, useRef } from 'react';
+import Link from 'next/link';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -11,12 +12,18 @@ import {
   FileCode, Radio, Search, List, Users, Globe, Ban,
 } from 'lucide-react';
 import { type LogResponse, type ParsedAppEntry, type ParsedActivityEntry, DEVICE_ICONS } from '../types';
-import { fmtTime, fmtDT, fmtUptime } from '../utils';
+import { fmtDT, fmtUptime } from '../utils';
 import { UserDisplay } from '../UserDisplay';
 import { BlockIPDialog } from '../dialogs/BlockIPDialog';
 import { IPActivityDialog } from '../dialogs/IPActivityDialog';
 
 const LINE_OPTIONS = [50, 100, 200, 500, 1000, 5000];
+
+// Sütun genişlikleri: "İstek" tek başına tüm boşluğu kaplayıp "Kullanıcı"
+// sütununu sıkıştırıyordu. Artık istek ve kullanıcı alanı boşluğu paylaşır.
+// Zaman sütunu tarih + saat gösterdiği için daha geniş tutulur.
+const APP_GRID = 'grid-cols-[150px_minmax(0,1.4fr)_130px_minmax(0,1.5fr)_32px]';
+const ACTIVITY_GRID = 'grid-cols-[145px_minmax(0,1.2fr)_minmax(0,1.2fr)_120px_90px_32px]';
 
 export function ServerLogsTab() {
   const [activeTab, setActiveTab] = useState('app');
@@ -28,7 +35,8 @@ export function ServerLogsTab() {
   const [activityFilter, setActivityFilter] = useState<'users' | 'ips'>('users');
   const [ipHistoryIP, setIpHistoryIP] = useState<string | null>(null);
   const [maxLines, setMaxLines] = useState(200);
-  const scrollRef = useRef<HTMLDivElement>(null);
+  const appScrollRef = useRef<HTMLDivElement>(null);
+  const activityScrollRef = useRef<HTMLDivElement>(null);
   const isFileSource = activeTab === 'app' || activeTab === 'activity';
 
   const fetchLogs = useCallback(async () => {
@@ -53,13 +61,53 @@ export function ServerLogsTab() {
   };
   const allEntries = (logs?.data || []) as Record<string, unknown>[];
   const filtered = allEntries.filter(matchesFilter);
+  // Dosya logu eskiden yeniye okunur; panelde en yeni kayıt en üstte görünsün.
+  const appEntries = (filtered as unknown as ParsedAppEntry[]).slice().reverse();
+
+  const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+  // Uygulama logunda kullanıcı sütunu: sadece e-posta; tam UUID varsa
+  // kullanıcı detay sayfasına bağlantı verilir (eski 8 karakterlik id'lerde düz metin).
+  const renderAppUser = (entry: ParsedAppEntry) => {
+    if (entry._parseError) return <span className="text-green-400/40 italic">{entry.raw}</span>;
+    if (entry.guest) return <span className="text-green-400/40">Misafir</span>;
+
+    const targetId = entry.user?.id || (entry.userId && UUID_REGEX.test(entry.userId) ? entry.userId : null);
+    const label =
+      entry.email ||
+      entry.user?.email ||
+      entry.user?.full_name ||
+      (entry.userId ? `${entry.userId.substring(0, 8)}…` : '-');
+
+    if (!targetId) return <span className="text-green-400/90">{label}</span>;
+
+    return (
+      <Link
+        href={`/admin/users/${targetId}`}
+        className="text-green-400/90 hover:text-green-300 hover:underline"
+        title="Kullanıcı detaylarını aç"
+      >
+        {label}
+      </Link>
+    );
+  };
   const activityFiltered = (filtered as unknown as ParsedActivityEntry[]).filter(e => {
     if (activityFilter === 'users') return e.userId && e.userId !== '';
     return !e.userId || e.userId === '';
   });
   const system = logs?.system;
 
-  useEffect(() => { if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight; }, [filtered.length, activityFilter]);
+  // Sayfa açılışında ve her yenilemede en yeni kayda (en üste) kaydır.
+  // Her iki liste de artık yeniden eskiye sıralı geliyor.
+  useEffect(() => {
+    if (loading) return;
+    const el = activeTab === 'app' ? appScrollRef.current : activityScrollRef.current;
+    if (!el) return;
+    const frame = requestAnimationFrame(() => {
+      el.scrollTop = 0;
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [activeTab, loading, logs, filter, activityFilter]);
 
   const SYS_METRICS = system ? [
     { icon: Server, label: 'Çalışma Süresi', value: fmtUptime(system.uptime) },
@@ -146,30 +194,28 @@ export function ServerLogsTab() {
             <Badge variant="secondary" className="text-xs gap-1"><List className="h-3 w-3" />{filtered.length} satır</Badge>
           </div>
           <div className="bg-black/95 text-green-400 font-mono text-xs rounded-xl overflow-x-auto border border-green-500/10 shadow-lg">
-            <div className="min-w-[400px]">
-              <div className="grid grid-cols-[120px_1fr_110px_90px_40px] gap-2 px-3 py-2 border-b border-green-400/10 text-green-400/50 text-[10px] uppercase tracking-wider">
+            <div className="min-w-[640px]">
+              <div className={`grid ${APP_GRID} gap-2 px-3 py-2 border-b border-green-400/10 text-green-400/50 text-[10px] uppercase tracking-wider`}>
                 <span>Zaman</span><span>İstek</span><span>IP</span><span>Kullanıcı</span><span></span>
               </div>
-              <div ref={scrollRef} className="h-[350px] lg:h-[450px] overflow-y-auto divide-y divide-green-400/5">
+              <div ref={appScrollRef} className="h-[350px] lg:h-[450px] overflow-y-auto divide-y divide-green-400/5">
                 {loading ? Array.from({ length: 8 }).map((_, i) => (
-                  <div key={i} className="grid grid-cols-[120px_1fr_110px_90px_40px] gap-2 px-3 py-1.5">
+                  <div key={i} className={`grid ${APP_GRID} gap-2 px-3 py-1.5`}>
                     {[1,2,3,4].map(j => <div key={j} className="h-3 bg-green-400/10 rounded animate-pulse" />)}
                   </div>
                 )) : filtered.length === 0 ? (
                   <div className="px-3 py-8 text-center text-green-400/40">{filter ? 'Filtreye uygun log bulunamadı.' : 'Henüz log kaydı yok.'}</div>
-                ) : (filtered as unknown as ParsedAppEntry[]).map((entry, i) => (
-                  <div key={i} className="grid grid-cols-[120px_1fr_110px_90px_40px] gap-2 px-3 py-1.5 hover:bg-green-400/5 transition-colors items-center">
-                    <span className="text-green-400/70 truncate">{fmtTime(entry.timestamp || '')}</span>
+                ) : appEntries.map((entry, i) => (
+                  <div key={i} className={`grid ${APP_GRID} gap-2 px-3 py-1.5 hover:bg-green-400/5 transition-colors items-center`}>
+                    <span className="text-green-400/70 truncate">{fmtDT(entry.timestamp || '')}</span>
                     <span className="truncate">{entry.path || entry.raw}</span>
                     <span className="text-green-400/70 truncate">
                       {entry.ip && entry.ip !== '-' ? (
                         <button onClick={() => setIpHistoryIP(entry.ip)} className="hover:text-green-300 hover:underline cursor-pointer">{entry.ip}</button>
                       ) : '-'}
                     </span>
-                    <span className="truncate">
-                      {entry._parseError ? <span className="text-green-400/40 italic">{entry.raw}</span> :
-                       entry.guest ? <span className="text-green-400/40">Misafir</span> :
-                       <UserDisplay user={entry.user} userId={entry.userId} email={entry.email} size="xs" />}
+                    <span className="truncate" title={entry.user?.full_name || entry.email || entry.userId}>
+                      {renderAppUser(entry)}
                     </span>
                     <Button variant="ghost" size="sm" className="h-6 w-6 p-0 text-green-400/40 hover:text-red-400" onClick={() => setBlockIP(entry.ip)} title="IP Engelle"><Ban className="h-3 w-3" /></Button>
                   </div>
@@ -215,13 +261,13 @@ export function ServerLogsTab() {
           </div>
           <Card className="border-border/50 overflow-hidden">
             <div className="overflow-x-auto">
-              <div className="min-w-[640px]">
-                <div className="grid grid-cols-[110px_1fr_1fr_100px_60px_40px] gap-2 px-4 py-2.5 bg-muted/30 text-xs font-medium text-muted-foreground uppercase tracking-wider">
+              <div className="min-w-[780px]">
+                <div className={`grid ${ACTIVITY_GRID} gap-2 px-4 py-2.5 bg-muted/30 text-xs font-medium text-muted-foreground uppercase tracking-wider`}>
                   <span>Zaman</span><span>{activityFilter === 'users' ? 'Kullanıcı' : 'IP'}</span><span>Sayfa</span><span>{activityFilter === 'users' ? 'IP' : 'Kullanıcı'}</span><span>Cihaz</span><span></span>
                 </div>
-                <div ref={scrollRef} className="divide-y max-h-[400px] overflow-y-auto">
+                <div ref={activityScrollRef} className="divide-y max-h-[400px] overflow-y-auto">
                   {loading ? Array.from({ length: 6 }).map((_, i) => (
-                    <div key={i} className="grid grid-cols-[110px_1fr_1fr_100px_60px_40px] gap-2 px-4 py-2.5">
+                    <div key={i} className={`grid ${ACTIVITY_GRID} gap-2 px-4 py-2.5`}>
                       {[1,2,3,4,5].map(j => <div key={j} className="h-4 bg-muted/50 rounded animate-pulse" />)}
                     </div>
                   )) : activityFiltered.length === 0 ? (
@@ -229,7 +275,7 @@ export function ServerLogsTab() {
                   ) : activityFiltered.map((entry, i) => {
                     const DeviceIcon = entry.deviceType ? DEVICE_ICONS[entry.deviceType] || Globe : Globe;
                     return (
-                      <div key={i} className="grid grid-cols-[110px_1fr_1fr_100px_60px_40px] gap-2 px-4 py-2.5 hover:bg-accent/30 transition-colors items-center text-sm">
+                      <div key={i} className={`grid ${ACTIVITY_GRID} gap-2 px-4 py-2.5 hover:bg-accent/30 transition-colors items-center text-sm`}>
                         <span className="text-muted-foreground text-xs whitespace-nowrap">
                           {entry._parseError ? <span className="text-muted-foreground/40 italic">{entry.raw}</span> : fmtDT(entry.timestamp)}
                         </span>

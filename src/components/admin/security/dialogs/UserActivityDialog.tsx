@@ -38,7 +38,15 @@ export function UserActivityDialog({ userId, userName, email, open, onOpenChange
   useEffect(() => { if (open) { setPage(1); fetchData(); } }, [open, userId]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { if (open) fetchData(); }, [fetchData, open]);
 
-  useEffect(() => { if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight; }, [entries.length]);
+  // Liste yeniden eskiye sıralı: en yeni kayıt en üstte. Açılışta/sayfa
+  // değişiminde en yeni kayda (üste) kaydır.
+  useEffect(() => {
+    if (loading) return;
+    const el = scrollRef.current;
+    if (!el) return;
+    const frame = requestAnimationFrame(() => { el.scrollTop = 0; });
+    return () => cancelAnimationFrame(frame);
+  }, [entries, loading]);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -58,13 +66,13 @@ export function UserActivityDialog({ userId, userName, email, open, onOpenChange
           </div>
           <Card className="border-border/50 overflow-hidden">
             <div className="overflow-x-auto">
-              <div className="min-w-[550px]">
-                <div className="grid grid-cols-[90px_1fr_100px_60px] gap-2 px-3 py-2 bg-muted/30 text-xs font-medium text-muted-foreground uppercase tracking-wider">
+              <div className="min-w-[660px]">
+                <div className="grid grid-cols-[140px_minmax(0,1.6fr)_120px_90px] gap-2 px-3 py-2 bg-muted/30 text-xs font-medium text-muted-foreground uppercase tracking-wider">
                   <span>Zaman</span><span>Sayfa</span><span>IP</span><span>Cihaz</span>
                 </div>
                 <div ref={scrollRef} className="divide-y max-h-[400px] overflow-y-auto">
                   {loading ? Array.from({ length: 5 }).map((_, i) => (
-                    <div key={i} className="grid grid-cols-[90px_1fr_100px_60px] gap-2 px-3 py-2">
+                    <div key={i} className="grid grid-cols-[140px_minmax(0,1.6fr)_120px_90px] gap-2 px-3 py-2">
                       {[1,2,3].map(j => <div key={j} className="h-4 bg-muted/50 rounded animate-pulse" />)}
                     </div>
                   )) : entries.length === 0 ? (
@@ -72,7 +80,7 @@ export function UserActivityDialog({ userId, userName, email, open, onOpenChange
                   ) : entries.map(entry => {
                     const DeviceIcon = entry.device_type ? DEVICE_ICONS[entry.device_type] || Globe : Globe;
                     return (
-                      <div key={entry.id} className="grid grid-cols-[90px_1fr_100px_60px] gap-2 px-3 py-2 hover:bg-accent/30 transition-colors items-center text-xs">
+                      <div key={entry.id} className="grid grid-cols-[140px_minmax(0,1.6fr)_120px_90px] gap-2 px-3 py-2 hover:bg-accent/30 transition-colors items-center text-xs">
                         <span className="text-muted-foreground whitespace-nowrap">{fmtDT(entry.created_at)}</span>
                         <span className="truncate font-mono">{entry.page_url}</span>
                         <span className="font-mono truncate text-muted-foreground">{entry.ip_address}</span>

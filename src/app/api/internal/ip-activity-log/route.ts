@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabase/server';
-import { appendActivityLog, appendLog } from '@/lib/logger';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -18,7 +17,7 @@ function getRequestIP(request: NextRequest): string {
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { ip_address, user_id, user_email, user_name, page_url, user_agent, device_type } = body;
+    const { ip_address, user_id, page_url, user_agent, device_type } = body;
 
     if (!page_url) {
       return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
@@ -26,20 +25,8 @@ export async function POST(request: NextRequest) {
 
     const resolvedIP = (ip_address && ip_address !== 'unknown') ? ip_address : getRequestIP(request);
 
-    appendActivityLog({
-      type: 'ip_activity',
-      ip_address: resolvedIP,
-      user_id: user_id || null,
-      user_email: user_email || '',
-      user_name: user_name || '',
-      page_url,
-      user_agent: user_agent || null,
-      device_type: device_type || 'unknown',
-      timestamp: new Date().toISOString(),
-    });
-
-    // "Uygulama" log sekmesi misafir isteklerini de bu dosyadan okur.
-    appendLog(`[${new Date().toISOString()}] ${page_url} | IP: ${resolvedIP} | User: guest`);
+    // Not: dosya tabanlı loglar (app.log / activity.log) proxy'de yazılıyor.
+    // Burada yalnızca veritabanı kaydı oluşturulur.
 
     try {
       const serviceClient = createServiceClient();
