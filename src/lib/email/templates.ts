@@ -55,6 +55,8 @@ export function prepareOrderEmailData(order: any): OrderEmailData {
     orderDate: order.created_at,
     totalAmount: order.total_price || order.total_amount,
     totalPrice: order.total_price || order.total_amount, // Added for compatibility
+    discountAmount: Number(order.discount_amount) || 0,
+    couponCode: order.coupon_code || null,
     items: order.items?.map((item: any) => ({
       fileName: item.file_name || item.file?.original_filename || 'Model',
       materialName: item.material_name || item.material?.name || 'Malzeme',

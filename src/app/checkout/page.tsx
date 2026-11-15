@@ -21,6 +21,8 @@ import { calculateCartDeliveryDays } from '@/lib/utils/delivery-calculator';
 import { paymentGatewayService, type EnabledGateway } from '@/lib/services/payment-gateway-service';
 import { getVatRate, getShippingSettings } from '@/lib/services/settings-service';
 import { calculateOrderTotals } from '@/lib/services/order-totals';
+import { useCoupon } from '@/lib/cart/use-coupon';
+import { CouponInput } from '@/components/checkout/coupon-input';
 import { getStoreItems, clearStoreCart, type StoreItem } from '@/lib/cart/store-cart';
 import { SavedAddressSelector } from '@/components/checkout/saved-address-selector';
 import { saveAddress } from '@/lib/services/address-service';
@@ -154,6 +156,7 @@ export default function CheckoutPage() {
           },
           paymentMethod,
           deliveryNotes,
+          couponCode: couponState.coupon?.code,
           expectedTotal: Math.round(total * 100) / 100,
         }),
       });
@@ -234,16 +237,33 @@ export default function CheckoutPage() {
   const subtotal3D = cartItems.reduce((s, i) => s + i.totalPrice, 0);
   const subtotalStore = storeItems.reduce((s, i) => s + i.totalPrice, 0);
   const subtotalItems = subtotal3D + subtotalStore;
+
+  // The code applied in the cart is read back here; any cart change since then
+  // is re-validated silently before the order is sent.
+  const couponState = useCoupon({
+    itemsSubtotal: subtotalItems,
+    serviceSubtotal: subtotal3D,
+    storeSubtotal: subtotalStore,
+  });
+
   // Same pure function the server uses, so the preview cannot drift from the
   // amount that is actually charged by a rounding difference.
-  const { subtotal, shipping: computedShipping, vat, total } = calculateOrderTotals({
+  const {
+    subtotal,
+    discount,
+    shipping: computedShipping,
+    vat,
+    total,
+  } = calculateOrderTotals({
     itemsSubtotal: subtotalItems,
     vatRate,
     shippingFee,
     freeShippingMinAmount,
+    discountAmount: couponState.coupon?.discountAmount,
+    freeShipping: couponState.coupon?.freeShipping,
   });
-  // "Ara Toplam" ürünler + kargo; KDV bu tutar üzerinden bir kez eklenir.
-  const summarySubtotal = subtotal + computedShipping;
+  // "Ara Toplam" indirimli ürünler + kargo; KDV bu tutar üzerinden bir kez eklenir.
+  const summarySubtotal = subtotal - discount + computedShipping;
   const totalItems = cartItems.reduce((s, i) => s + i.quantity, 0) + storeItems.reduce((s, i) => s + i.quantity, 0);
 
   if (isLoading) {
@@ -550,6 +570,14 @@ export default function CheckoutPage() {
                       <span className="text-muted-foreground">Kargo</span>
                       {computedShipping > 0 ? <span className="font-medium">{computedShipping.toFixed(2)} TL</span> : <span className="text-green-600 font-medium">Ücretsiz</span>}
                     </div>
+                    {couponState.coupon && (couponState.coupon.freeShipping || discount > 0) && (
+                      <div className="flex justify-between text-green-600">
+                        <span className="font-medium truncate pr-2">Kupon ({couponState.coupon.code})</span>
+                        <span className="font-semibold shrink-0">
+                          {couponState.coupon.freeShipping ? 'Ücretsiz kargo' : `-${discount.toFixed(2)} TL`}
+                        </span>
+                      </div>
+                    )}
                     <div className="border-t border-border/50 pt-2.5 space-y-2.5">
                       <div className="flex justify-between"><span className="text-muted-foreground">Ara Toplam</span><span className="font-medium">{summarySubtotal.toFixed(2)} TL</span></div>
                       <div className="flex justify-between"><span className="text-muted-foreground">KDV (%{(vatRate * 100).toFixed(0)})</span><span className="font-medium">{vat.toFixed(2)} TL</span></div>
@@ -559,6 +587,16 @@ export default function CheckoutPage() {
                       <span className="text-2xl font-bold text-primary">{total.toFixed(2)} TL</span>
                     </div>
                   </div>
+
+                  <CouponInput
+                    coupon={couponState.coupon}
+                    isChecking={couponState.isChecking}
+                    error={couponState.error}
+                    removedNotice={couponState.removedNotice}
+                    onApply={couponState.apply}
+                    onRemove={couponState.remove}
+                    disabled={!hasServiceItems && !hasStoreItems}
+                  />
 
                   <div className="grid grid-cols-3 gap-2 py-1">
                     {[
@@ -581,7 +619,7 @@ export default function CheckoutPage() {
                   )}
 
                   <Button onClick={handlePlaceOrder}
-                    disabled={isSubmitting || (!hasServiceItems && !hasStoreItems) || enabledGateways.length === 0 || !paymentMethod}
+                    disabled={isSubmitting || couponState.isChecking || (!hasServiceItems && !hasStoreItems) || enabledGateways.length === 0 || !paymentMethod}
                     size="lg" className="w-full h-12 gap-2 rounded-xl shadow-lg shadow-primary/20"
                   >
                     {isSubmitting ? <><Loader2 className="h-4 w-4 animate-spin" />İşleniyor...</> : <><CheckCircle2 className="h-5 w-5" />Siparişi Tamamla</>}

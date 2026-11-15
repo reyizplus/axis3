@@ -20,10 +20,21 @@ export interface OrderTotalsInput {
   shippingFee: number;
   /** Order subtotal at/above which shipping is free. */
   freeShippingMinAmount: number;
+  /**
+   * Coupon discount on top of the item prices (TL). Clamped to the subtotal so
+   * a stale or tampered amount can never produce a negative order.
+   */
+  discountAmount?: number;
+  /** Coupon grants free shipping regardless of the threshold. */
+  freeShipping?: boolean;
 }
 
 export interface OrderTotals {
   subtotal: number;
+  /** Applied coupon discount (0 when none). */
+  discount: number;
+  /** `subtotal - discount`; what the items cost after the coupon. */
+  discountedSubtotal: number;
   shipping: number;
   vat: number;
   total: number;
@@ -35,16 +46,27 @@ export const PRICE_DRIFT_TOLERANCE = 0.02;
 export function calculateOrderTotals(input: OrderTotalsInput): OrderTotals {
   const subtotal = roundMoney(Math.max(0, input.itemsSubtotal));
 
-  // Free shipping applies from the configured threshold; a fee of 0 is free.
+  // A coupon can never discount more than the items are worth.
+  const discount = roundMoney(
+    Math.min(Math.max(0, Number(input.discountAmount) || 0), subtotal)
+  );
+  const discountedSubtotal = roundMoney(subtotal - discount);
+
+  // Free shipping applies from the configured threshold, when the coupon
+  // grants it, or when there is no fee at all.
+  //
+  // Both the threshold and any coupon minimum are evaluated on the pre-discount
+  // subtotal, so a coupon cannot push the cart below the free-shipping line.
   const shipping =
-    input.shippingFee > 0 && subtotal >= input.freeShippingMinAmount
+    input.freeShipping === true || input.shippingFee <= 0 || subtotal >= input.freeShippingMinAmount
       ? 0
-      : roundMoney(Math.max(0, input.shippingFee));
+      : roundMoney(input.shippingFee);
 
-  const vat = roundMoney((subtotal + shipping) * input.vatRate);
-  const total = roundMoney(subtotal + shipping + vat);
+  // VAT is charged on the discounted goods plus shipping.
+  const vat = roundMoney((discountedSubtotal + shipping) * input.vatRate);
+  const total = roundMoney(discountedSubtotal + shipping + vat);
 
-  return { subtotal, shipping, vat, total };
+  return { subtotal, discount, discountedSubtotal, shipping, vat, total };
 }
 
 /**

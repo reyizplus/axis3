@@ -39,6 +39,7 @@ import {
   Truck,
   ScrollText,
   Calculator,
+  Ticket,
 } from 'lucide-react';
 import { useAuth } from '@/components/providers/auth-provider';
 import { toast } from 'sonner';
@@ -79,6 +80,7 @@ export const NAV_PERMISSION_KEYS: Record<string, string> = {
   '/admin/feedback': 'feedback',
   '/admin/store/products': 'store-products',
   '/admin/store/categories': 'store-categories',
+  '/admin/coupons': 'coupons',
   '/admin/security': 'security',
   '/admin/settings': 'settings',
 };
@@ -114,6 +116,7 @@ const ALL_NAV_GROUPS: NavGroup[] = [
     items: [
       { name: 'Ürünler', href: '/admin/store/products', icon: Store },
       { name: 'Kategoriler', href: '/admin/store/categories', icon: Tag },
+      { name: 'Kuponlar', href: '/admin/coupons', icon: Ticket },
     ],
   },
   {

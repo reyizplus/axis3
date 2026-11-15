@@ -18,6 +18,8 @@ interface OrderConfirmationProps {
   order: {
     orderNumber: string;
     totalPrice: number;
+    discountAmount: number;
+    couponCode?: string | null;
     items: Array<{
       fileName: string;
       quantity: number;
@@ -31,6 +33,8 @@ interface OrderConfirmationProps {
 
 export default function OrderConfirmation({ order }: OrderConfirmationProps) {
   const formattedTotal = new Intl.NumberFormat('tr-TR', { style: 'currency', currency: 'TRY' }).format(order.totalPrice);
+  const formattedDiscount = new Intl.NumberFormat('tr-TR', { style: 'currency', currency: 'TRY' }).format(order.discountAmount ?? 0);
+  const hasDiscount = (order.discountAmount ?? 0) > 0;
 
   return (
     <Html>
@@ -80,6 +84,18 @@ export default function OrderConfirmation({ order }: OrderConfirmationProps) {
                         </td>
                         <td style={summaryValueCell}>
                           <Text style={summaryValue}>{order.estimatedDeliveryDate}</Text>
+                        </td>
+                      </tr>
+                    )}
+                    {hasDiscount && (
+                      <tr>
+                        <td style={summaryLabelCell}>
+                          <Text style={summaryLabel}>
+                            İndirim{order.couponCode ? ` (${order.couponCode})` : ''}
+                          </Text>
+                        </td>
+                        <td style={summaryValueCell}>
+                          <Text style={summaryDiscountValue}>-{formattedDiscount}</Text>
                         </td>
                       </tr>
                     )}
@@ -349,6 +365,13 @@ const summaryValueBold = {
   color: '#000000',
   margin: '0',
   fontWeight: '700',
+};
+
+const summaryDiscountValue = {
+  fontSize: '13px',
+  color: '#16a34a',
+  margin: '0',
+  fontWeight: '600',
 };
 
 const itemsSection = {

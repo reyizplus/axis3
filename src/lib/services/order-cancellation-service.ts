@@ -14,6 +14,7 @@
 
 import { createServiceClient } from '@/lib/supabase/server';
 import { isMissingColumnError, isMissingFunctionError } from '@/lib/supabase/errors';
+import { releaseCoupon } from '@/lib/services/coupon-service';
 
 export async function releaseOrderStock(orderId: string): Promise<boolean> {
   const supabase = createServiceClient();
@@ -143,6 +144,10 @@ export async function cancelOrder(
   const supabase = createServiceClient();
 
   await releaseOrderStock(orderId);
+
+  // A cancelled/failed order must not burn its coupon: release the reservation
+  // so the quota reopens for the next customer. Idempotent.
+  await releaseCoupon(orderId);
 
   const patch: Record<string, unknown> = {
     status: 'cancelled',

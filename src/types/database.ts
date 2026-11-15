@@ -240,6 +240,69 @@ export interface Database {
         }
         Relationships: []
       }
+      coupons: {
+        Row: {
+          id: string; code: string; description: string | null
+          discount_type: string; discount_value: number; max_discount_amount: number | null
+          min_order_amount: number; applies_to: string
+          starts_at: string | null; ends_at: string | null
+          quota_basis: string; quota_limit: number | null
+          per_user_mode: string; per_user_limit: number | null
+          first_order_only: boolean; is_active: boolean
+          is_personal: boolean; owner_user_id: string | null
+          batch_id: string | null; batch_label: string | null
+          exhausted_at: string | null; created_by: string | null
+          created_at: string; updated_at: string
+        }
+        Insert: {
+          id?: string; code: string; description?: string | null
+          discount_type: string; discount_value?: number; max_discount_amount?: number | null
+          min_order_amount?: number; applies_to?: string
+          starts_at?: string | null; ends_at?: string | null
+          quota_basis?: string; quota_limit?: number | null
+          per_user_mode?: string; per_user_limit?: number | null
+          first_order_only?: boolean; is_active?: boolean
+          is_personal?: boolean; owner_user_id?: string | null
+          batch_id?: string | null; batch_label?: string | null
+          exhausted_at?: string | null; created_by?: string | null
+          created_at?: string; updated_at?: string
+        }
+        Update: {
+          id?: string; code?: string; description?: string | null
+          discount_type?: string; discount_value?: number; max_discount_amount?: number | null
+          min_order_amount?: number; applies_to?: string
+          starts_at?: string | null; ends_at?: string | null
+          quota_basis?: string; quota_limit?: number | null
+          per_user_mode?: string; per_user_limit?: number | null
+          first_order_only?: boolean; is_active?: boolean
+          is_personal?: boolean; owner_user_id?: string | null
+          batch_id?: string | null; batch_label?: string | null
+          exhausted_at?: string | null; created_by?: string | null
+          created_at?: string; updated_at?: string
+        }
+        Relationships: []
+      }
+      coupon_redemptions: {
+        Row: {
+          id: string; coupon_id: string; campaign_key: string; user_id: string
+          order_id: string; discount_amount: number; status: string
+          expires_at: string | null; created_at: string
+          consumed_at: string | null; released_at: string | null
+        }
+        Insert: {
+          id?: string; coupon_id: string; campaign_key: string; user_id: string
+          order_id: string; discount_amount?: number; status?: string
+          expires_at?: string | null; created_at?: string
+          consumed_at?: string | null; released_at?: string | null
+        }
+        Update: {
+          id?: string; coupon_id?: string; campaign_key?: string; user_id?: string
+          order_id?: string; discount_amount?: number; status?: string
+          expires_at?: string | null; created_at?: string
+          consumed_at?: string | null; released_at?: string | null
+        }
+        Relationships: []
+      }
       feedback: {
         Row: {
           id: string; user_id: string | null; category: string; title: string; description: string
@@ -502,6 +565,7 @@ export interface Database {
         Row: {
           id: string; user_id: string; order_number: string;           shipping_address: Json
           billing_address: Json; subtotal: number; discount_amount: number; tax_amount: number
+          coupon_id: string | null; coupon_code: string | null
           shipping_cost: number; total_amount: number; status: string
           customer_notes: string | null; admin_notes: string | null
           shipping_method: string | null; tracking_number: string | null
@@ -518,6 +582,7 @@ export interface Database {
         Insert: {
           id?: string; user_id: string; order_number: string; shipping_address: Json
           billing_address: Json; subtotal: number; discount_amount?: number; tax_amount: number
+          coupon_id?: string | null; coupon_code?: string | null
           shipping_cost?: number; total_amount: number; status?: string
           customer_notes?: string | null; admin_notes?: string | null
           shipping_method?: string | null; tracking_number?: string | null
@@ -534,6 +599,7 @@ export interface Database {
         Update: {
           id?: string; user_id?: string; order_number?: string; shipping_address?: Json
           billing_address?: Json; subtotal?: number; discount_amount?: number; tax_amount?: number
+          coupon_id?: string | null; coupon_code?: string | null
           shipping_cost?: number; total_amount?: number; status?: string
           customer_notes?: string | null; admin_notes?: string | null
           shipping_method?: string | null; tracking_number?: string | null
@@ -902,7 +968,18 @@ export interface Database {
       }
     }
     Views: {
-      [_ in never]: never
+      coupon_usage: {
+        Row: {
+          campaign_key: string | null; redemption_count: number; user_count: number
+        }
+        Relationships: []
+      }
+      coupon_user_usage: {
+        Row: {
+          campaign_key: string | null; user_id: string | null; redemption_count: number
+        }
+        Relationships: []
+      }
     }
     Functions: {
       is_admin: {

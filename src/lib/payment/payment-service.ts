@@ -9,10 +9,13 @@
  */
 
 import { getIyzipayClient, BASKET_ITEM_TYPE, PAYMENT_CONFIG } from './iyzico-client';
+import { buildBasketItems, type BasketLine } from './basket';
 import { createClient, createServiceClient } from '@/lib/supabase/server';
 import { isMissingColumnError } from '@/lib/supabase/errors';
+import { toCents } from '@/lib/utils/money';
 import { mailService } from '@/lib/services/mail-service';
 import { cancelOrder } from '@/lib/services/order-cancellation-service';
+import { consumeCoupon } from '@/lib/services/coupon-service';
 
 export interface PaymentInitRequest {
   orderId: string;
@@ -330,82 +333,48 @@ export class PaymentService {
   }
 
   /**
-   * Map order items to iyzico basket items
-   * Note: iyzico requires basketItems total to equal order total_amount
-   * So we include shipping and tax as separate items
+   * Map order items to iyzico basket items.
+   *
+   * iyzico requires the basket total to equal `paidPrice`. A coupon therefore
+   * cannot simply be sent as one negative row: the discount is distributed
+   * across the goods in kuruş (`@/lib/payment/basket`), then shipping and VAT
+   * are appended, and any last-rounding difference is absorbed by one line.
    */
   private mapBasketItems(items: Record<string, unknown>[], order: Record<string, unknown>) {
-    const basketItems = items.map(item => ({
-      id: item.id,
+    const goods: BasketLine[] = items.map((item) => ({
+      id: String(item.id),
       name: (item.filename as string) || 'STL File',
       category1: '3D Baskı',
-      category2: (item.material_name as string),
+      category2: (item.material_name as string) || 'Baskı',
       itemType: BASKET_ITEM_TYPE.PHYSICAL,
-      price: Number(item.subtotal).toFixed(2)
+      priceCents: toCents(Number(item.subtotal)),
     }));
 
     // Store products live in a separate table and must also be sent, otherwise
     // a store-only order produces an empty basket and iyzico rejects it.
     const storeItems = (order.storeItems as Record<string, unknown>[] | undefined) || [];
     for (const item of storeItems) {
-      basketItems.push({
+      goods.push({
         id: String(item.id),
-        name: (item.product_name as string) || 'Urun',
-        category1: 'Magaza',
-        category2: (item.sku as string) || 'Urun',
+        name: (item.product_name as string) || 'Ürün',
+        category1: 'Mağaza',
+        category2: (item.sku as string) || 'Ürün',
         itemType: BASKET_ITEM_TYPE.PHYSICAL,
-        price: Number(item.subtotal).toFixed(2)
+        priceCents: toCents(Number(item.subtotal)),
       });
     }
 
-    // Add shipping cost as separate item if exists
-    const shippingCost = Number(order.shipping_cost || 0);
-    if (shippingCost > 0) {
-      basketItems.push({
-        id: 'shipping',
-        name: 'Kargo Ücreti',
-        category1: 'Kargo',
-        category2: 'Teslimat',
-        itemType: BASKET_ITEM_TYPE.PHYSICAL,
-        price: shippingCost.toFixed(2)
-      });
-    }
-
-    // Add tax as separate item if exists
-    const taxAmount = Number(order.tax_amount || 0);
-    if (taxAmount > 0) {
-      basketItems.push({
-        id: 'tax',
-        name: 'KDV',
-        category1: 'Vergi',
-        category2: 'KDV',
-        itemType: BASKET_ITEM_TYPE.PHYSICAL,
-        price: taxAmount.toFixed(2)
-      });
-    }
-
-    // iyzico rejects the request when basket total != paidPrice. Rounding at
-    // the item level makes small differences inevitable, so correct the last
-    // item instead of failing the payment.
-    const paidPrice = Math.round(Number(order.total_amount || 0) * 100) / 100;
-    const basketTotal =
-      basketItems.reduce((sum, item) => sum + Math.round(Number(item.price) * 100), 0) / 100;
-    const diff = Math.round((paidPrice - basketTotal) * 100) / 100;
-
-    if (diff !== 0 && basketItems.length > 0) {
-      const last = basketItems[basketItems.length - 1];
-      const corrected = Math.round((Number(last.price) + diff) * 100) / 100;
-      if (corrected > 0) {
-        last.price = corrected.toFixed(2);
-      } else {
-        console.error('[PaymentService] Basket total mismatch cannot be corrected:', {
-          paidPrice,
-          basketTotal,
-        });
-      }
-    }
-
-    return basketItems;
+    return buildBasketItems({
+      goods,
+      shippingCents: toCents(Number(order.shipping_cost || 0)),
+      taxCents: toCents(Number(order.tax_amount || 0)),
+      discountCents: toCents(Number(order.discount_amount || 0)),
+      paidCents: toCents(Number(order.total_amount || 0)),
+      feeItemType: BASKET_ITEM_TYPE.PHYSICAL,
+    }).map(({ priceCents, ...line }) => ({
+      ...line,
+      price: (priceCents / 100).toFixed(2),
+    }));
   }
 
   /**
@@ -494,8 +463,10 @@ export class PaymentService {
     
     if (verifyError) {
       console.error('[PaymentService.updateOrderPaymentSuccess] ❌ Verification failed:', verifyError);
-    } else {
-          }
+    }
+
+    // The order is paid: promote the coupon reservation to a real use.
+    await consumeCoupon(orderId);
 
     // Send order confirmation email after successful payment
         // eslint-disable-next-line @typescript-eslint/no-explicit-any

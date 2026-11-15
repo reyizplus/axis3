@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 import { mailService } from '@/lib/services/mail-service';
 import { releaseOrderStock } from '@/lib/services/order-cancellation-service';
+import { releaseCoupon } from '@/lib/services/coupon-service';
 import type { OrderStatus } from '@/lib/services/order-service';
 
 export const runtime = 'nodejs';
@@ -71,6 +72,9 @@ export async function PATCH(
       if (!released) {
         console.error('[Order Status API] Could not release stock for cancelled order:', orderId);
       }
+
+      // Same reasoning for the coupon: an unpaid order never used its slot.
+      await releaseCoupon(orderId);
     }
 
     const { data: completeOrder } = await supabase

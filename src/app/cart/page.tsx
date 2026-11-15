@@ -19,6 +19,9 @@ import Link from 'next/link';
 import { calculateCartDeliveryDays } from '@/lib/utils/delivery-calculator';
 import { getVatRate, getShippingSettings } from '@/lib/services/settings-service';
 import { createClient } from '@/lib/supabase/client';
+import { calculateOrderTotals } from '@/lib/services/order-totals';
+import { useCoupon } from '@/lib/cart/use-coupon';
+import { CouponInput } from '@/components/checkout/coupon-input';
 import Image from 'next/image';
 import { Skeleton } from '@/components/ui/skeleton';
 
@@ -127,14 +130,34 @@ function CartContent() {
 
   const subtotal3D = cartItems.reduce((s, i) => s + i.totalPrice, 0);
   const subtotalStore = storeItems.reduce((s, i) => s + i.totalPrice, 0);
-  const subtotal = subtotal3D + subtotalStore;
-  const computedShipping = shippingFee > 0 && subtotal >= freeShippingMinAmount ? 0 : shippingFee;
+  const subtotalItems = subtotal3D + subtotalStore;
+
+  // Shared with checkout: the server validates the code against these totals
+  // and re-runs silently whenever the cart changes.
+  const couponState = useCoupon({
+    itemsSubtotal: subtotalItems,
+    serviceSubtotal: subtotal3D,
+    storeSubtotal: subtotalStore,
+  });
+
+  const {
+    subtotal,
+    discount,
+    shipping: computedShipping,
+    vat,
+    total,
+  } = calculateOrderTotals({
+    itemsSubtotal: subtotalItems,
+    vatRate,
+    shippingFee,
+    freeShippingMinAmount,
+    discountAmount: couponState.coupon?.discountAmount,
+    freeShipping: couponState.coupon?.freeShipping,
+  });
+
   const remainingForFreeShipping = shippingFee > 0 && computedShipping > 0 ? freeShippingMinAmount - subtotal : 0;
-  // "Ara Toplam" ürünler + kargo; KDV bu tutar üzerinden bir kez eklenir.
-  const summarySubtotal = subtotal + computedShipping;
-  const taxableBase = subtotal + computedShipping;
-  const vat = taxableBase * vatRate;
-  const total = taxableBase + vat;
+  // "Ara Toplam" indirimli ürünler + kargo; KDV bu tutar üzerinden bir kez eklenir.
+  const summarySubtotal = subtotal - discount + computedShipping;
   const totalItems = cartItems.reduce((s, i) => s + i.quantity, 0) + storeItems.reduce((s, i) => s + i.quantity, 0);
   const hasItems = cartItems.length > 0 || storeItems.length > 0;
 
@@ -395,6 +418,16 @@ function CartContent() {
                           )}
                         </div>
                       )}
+                      {couponState.coupon && (couponState.coupon.freeShipping || discount > 0) && (
+                        <div className="flex justify-between text-green-600">
+                          <span className="font-medium truncate pr-2">
+                            Kupon ({couponState.coupon.code})
+                          </span>
+                          <span className="font-semibold shrink-0">
+                            {couponState.coupon.freeShipping ? 'Ücretsiz kargo' : `-${discount.toFixed(2)} TL`}
+                          </span>
+                        </div>
+                      )}
                       <div className="border-t border-border/50 pt-2.5 space-y-2.5">
                         <div className="flex justify-between">
                           <span className="text-muted-foreground">Ara Toplam</span>
@@ -410,6 +443,16 @@ function CartContent() {
                         <span className="text-primary">{total.toFixed(2)} TL</span>
                       </div>
                     </div>
+
+                    <CouponInput
+                      coupon={couponState.coupon}
+                      isChecking={couponState.isChecking}
+                      error={couponState.error}
+                      removedNotice={couponState.removedNotice}
+                      onApply={couponState.apply}
+                      onRemove={couponState.remove}
+                      disabled={!hasItems}
+                    />
 
                     {cartItems.length > 0 && (
                       <div className="rounded-xl bg-muted/50 p-3 space-y-1">

@@ -96,6 +96,7 @@ const ADMIN_SECTIONS = [
   { key: 'feedback', label: 'Geri Bildirim' },
   { key: 'store-products', label: 'Mağaza - Ürünler' },
   { key: 'store-categories', label: 'Mağaza - Kategoriler' },
+  { key: 'coupons', label: 'Kuponlar' },
   { key: 'security', label: 'Sunucu Logları' },
   { key: 'settings', label: 'Ayarlar' },
 ] as const;

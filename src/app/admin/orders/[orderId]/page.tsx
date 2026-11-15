@@ -37,6 +37,7 @@ interface OrderItem3D {
 interface Order {
   id: string; order_number: string; status: string; payment_status: string;
   payment_method: string | null; total_amount: number; subtotal: number;
+  discount_amount: number; coupon_code: string | null;
   shipping_cost: number; tax_amount: number; shipping_address: any;
   customer_notes: string | null; estimated_delivery: string | null;
   created_at: string; items: OrderItem3D[]; storeItems: any[];
@@ -417,6 +418,16 @@ export default function AdminOrderDetailPage() {
                 <span className="text-muted-foreground">Ara Toplam</span>
                 <span className="font-medium">{f(order.subtotal + order.shipping_cost)}</span>
               </div>
+              {(order.discount_amount ?? 0) > 0 && (
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">
+                    İndirim{order.coupon_code ? ` (${order.coupon_code})` : ''}
+                  </span>
+                  <span className="font-medium text-emerald-600 dark:text-emerald-400">
+                    -{f(order.discount_amount)}
+                  </span>
+                </div>
+              )}
               <div className="flex justify-between">
                 <span className="text-muted-foreground">KDV</span>
                 <span className="font-medium">{f(order.tax_amount)}</span>

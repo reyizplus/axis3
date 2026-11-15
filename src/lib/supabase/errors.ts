@@ -64,3 +64,30 @@ export function isMissingFunctionError(error: unknown, functionName?: string): b
 
   return text.includes(functionName);
 }
+
+/**
+ * True when PostgREST rejected the request because a table/view is missing
+ * (migration not applied yet). Used so a feature can be switched off instead of
+ * failing an unrelated user action.
+ */
+export function isMissingRelationError(error: unknown, relation?: string): boolean {
+  if (!error) return false;
+
+  const e = error as PostgrestLikeError;
+  const text = [e.code, e.message, e.details, e.hint]
+    .filter((part): part is string => typeof part === 'string')
+    .join(' ');
+
+  // 42P01 = undefined_table, PGRST205 = table not found in schema cache
+  const looksLikeMissingRelation =
+    e.code === '42P01' ||
+    e.code === 'PGRST205' ||
+    /relation .* does not exist/i.test(text) ||
+    /could not find the table/i.test(text) ||
+    /schema cache/i.test(text);
+
+  if (!looksLikeMissingRelation) return false;
+  if (!relation) return true;
+
+  return text.includes(relation);
+}

@@ -58,6 +58,7 @@ const createOrderSchema = z.object({
   address: addressSchema,
   paymentMethod: z.string().min(1).max(50),
   deliveryNotes: z.string().max(1000).optional(),
+  couponCode: z.string().trim().min(1).max(64).optional(),
   expectedTotal: z.number().min(0).max(10_000_000).optional(),
 });
 

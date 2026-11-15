@@ -14,6 +14,10 @@ export interface OrderEmailData {
   orderDate: string;
   totalAmount: number;
   totalPrice: number; // Added for OrderConfirmation template compatibility
+  /** Applied coupon discount in TL (0 when no coupon was used). */
+  discountAmount: number;
+  /** Coupon code shown next to the discount line, when present. */
+  couponCode: string | null;
   items: OrderItemEmailData[];
   deliveryAddress: string;
   estimatedDeliveryDate: string;

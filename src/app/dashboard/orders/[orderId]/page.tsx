@@ -91,6 +91,9 @@ interface Order {
   payment_method: string | null;
   payment_id: string | null;
   total_amount: number;
+  subtotal: number;
+  discount_amount: number;
+  coupon_code: string | null;
   shipping_cost: number;
   tax_amount: number;
   shipping_address: any;
@@ -867,8 +870,18 @@ export default function OrderDetailPage() {
                 </div>
                 <div className="flex justify-between text-sm">
                   <span className="text-muted-foreground">Ara Toplam</span>
-                  <span>{formatCurrency(order.total_amount - order.tax_amount)}</span>
+                  <span>{formatCurrency(order.subtotal + order.shipping_cost)}</span>
                 </div>
+                {(order.discount_amount ?? 0) > 0 && (
+                  <div className="flex justify-between text-sm">
+                    <span className="text-muted-foreground">
+                      İndirim{order.coupon_code ? ` (${order.coupon_code})` : ''}
+                    </span>
+                    <span className="text-emerald-600 dark:text-emerald-400">
+                      -{formatCurrency(order.discount_amount)}
+                    </span>
+                  </div>
+                )}
                 <div className="flex justify-between text-sm">
                   <span className="text-muted-foreground">KDV</span>
                   <span>{formatCurrency(order.tax_amount)}</span>

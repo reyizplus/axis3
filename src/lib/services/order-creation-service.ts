@@ -18,6 +18,14 @@ import { PricingEngine, isSlicingEnabled } from '@/lib/pricing';
 import { normalizeVatRate } from '@/lib/pricing/core';
 import type { PriceBreakdown as EngineBreakdown } from '@/lib/pricing/types';
 import { calculateOrderTotals, hasPriceDrift } from '@/lib/services/order-totals';
+import {
+  COUPON_UNAVAILABLE_MESSAGE,
+  checkCoupon,
+  couponFailureStatus,
+  isCouponSystemEnabled,
+  reserveCoupon,
+  type CouponRow,
+} from '@/lib/services/coupon-service';
 import { isMissingColumnError, isMissingFunctionError } from '@/lib/supabase/errors';
 import { getCachedAnalysis, saveAnalysis } from '@/lib/pricing/server/analysis-cache';
 import {
@@ -72,6 +80,8 @@ export interface CreateOrderInput {
   address: ShippingAddressInput;
   paymentMethod: string;
   deliveryNotes?: string;
+  /** Coupon code typed by the customer. Priced and reserved server-side. */
+  couponCode?: string;
   /** Amount the user saw in the UI. Used only to detect a price drift, never to price the order. */
   expectedTotal?: number;
 }
@@ -80,6 +90,8 @@ export interface CreatedOrder {
   id: string;
   orderNumber: string;
   subtotal: number;
+  /** Applied coupon discount (0 when no coupon). */
+  discount: number;
   shipping: number;
   vat: number;
   total: number;
@@ -705,16 +717,48 @@ export async function createOrder(input: CreateOrderInput): Promise<CreatedOrder
     });
   }
 
-  // ---------- Totals (server-side) ----------
-  const itemsSubtotal =
-    resolvedItems.reduce((sum, i) => sum + i.totalPrice, 0) +
-    resolvedStoreItems.reduce((sum, i) => sum + i.totalPrice, 0);
+  // ---------- Coupon (server-side) ----------
+  const serviceSubtotal = resolvedItems.reduce((sum, i) => sum + i.totalPrice, 0);
+  const storeSubtotal = resolvedStoreItems.reduce((sum, i) => sum + i.totalPrice, 0);
+  const itemsSubtotal = serviceSubtotal + storeSubtotal;
 
-  const { subtotal, shipping, vat, total } = calculateOrderTotals({
+  let coupon: CouponRow | null = null;
+  let discountAmount = 0;
+  let freeShipping = false;
+
+  if (input.couponCode?.trim()) {
+    if (!(await isCouponSystemEnabled(supabase))) {
+      throw new OrderCreationError(COUPON_UNAVAILABLE_MESSAGE, 503);
+    }
+
+    const check = await checkCoupon(supabase, {
+      code: input.couponCode,
+      userId: user.id,
+      itemsSubtotal,
+      serviceSubtotal,
+      storeSubtotal,
+    });
+
+    if (!check.ok) {
+      throw new OrderCreationError(
+        check.evaluation.message,
+        check.available ? couponFailureStatus(check.evaluation.reason) : 503
+      );
+    }
+
+    coupon = check.coupon;
+    discountAmount = check.evaluation.discountAmount;
+    freeShipping = check.evaluation.freeShipping;
+  }
+
+  // ---------- Totals (server-side) ----------
+  const { subtotal, discount, shipping, vat, total } = calculateOrderTotals({
     itemsSubtotal,
     vatRate: settings.vatRate,
     shippingFee: settings.shippingFee,
     freeShippingMinAmount: settings.freeShippingMinAmount,
+    discountAmount,
+    freeShipping,
   });
 
   if (settings.minOrderAmount > 0 && subtotal < settings.minOrderAmount) {
@@ -753,6 +797,8 @@ export async function createOrder(input: CreateOrderInput): Promise<CreatedOrder
       order_number: orderNumber,
       status: 'pending',
       subtotal,
+      discount_amount: discount,
+      ...(coupon ? { coupon_id: coupon.id, coupon_code: coupon.code } : {}),
       tax_amount: vat,
       shipping_cost: shipping,
       total_amount: total,
@@ -841,6 +887,27 @@ export async function createOrder(input: CreateOrderInput): Promise<CreatedOrder
   } catch (err) {
     await (supabase.from('orders') as any).delete().eq('id', order.id);
     throw err;
+  }
+
+  // ---------- Coupon reservation (after the order exists) ----------
+  // The RPC takes a campaign advisory lock and re-checks the live quota, so a
+  // slot filled by a concurrent checkout is still rejected here. Deleting the
+  // order cascades the reservation away if anything below fails.
+  if (coupon) {
+    const reservation = await reserveCoupon(supabase, {
+      couponId: coupon.id,
+      userId: user.id,
+      orderId: order.id,
+      discountAmount: discount,
+    });
+
+    if (!reservation.ok) {
+      await (supabase.from('orders') as any).delete().eq('id', order.id);
+      throw new OrderCreationError(
+        reservation.message || 'Kupon uygulanamadı',
+        reservation.status
+      );
+    }
   }
 
   // ---------- Stock deduction (after persistence, with rollback) ----------
@@ -936,6 +1003,7 @@ export async function createOrder(input: CreateOrderInput): Promise<CreatedOrder
     id: order.id,
     orderNumber: order.order_number,
     subtotal,
+    discount,
     shipping,
     vat,
     total,
