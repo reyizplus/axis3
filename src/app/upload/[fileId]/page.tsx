@@ -97,6 +97,11 @@ export default function UploadDetailPage() {
   const [requireSlicing, setRequireSlicing] = useState(true);
   /** Dilimleme hatasından sonra "Tekrar dene" için sayacı artırır. */
   const [retryToken, setRetryToken] = useState(0);
+  /**
+   * Fiyat hiç üretilemediyse son hata mesajı. Toast kaybolduktan sonra da
+   * fiyat panelinde sebep + "Tekrar dene" görünsün diye tutulur.
+   */
+  const [priceError, setPriceError] = useState<string | null>(null);
 
   const [advancedMode, setAdvancedMode] = useState(false);
   const [customLayerHeight, setCustomLayerHeight] = useState(0.2);
@@ -338,6 +343,7 @@ export default function UploadDetailPage() {
       setIsCalculating(true);
       setPricingResult(null);
       setPriceSource(null);
+      setPriceError(null);
       setIsSlicing(!isSla);
 
       try {
@@ -459,8 +465,22 @@ export default function UploadDetailPage() {
           setIsSlicing(false);
           setPricingResult(null);
           setPriceSource(null);
+          // Mesaj panelde kalıcı kalsın: toast kapandıktan sonra da kullanıcı
+          // sebebi görüp tekrar deneyebilmeli.
+          setPriceError(payload?.error ?? 'Dilimleme yapılamadı');
+          // Dilimleyici geçici olarak yanıt vermiyorsa kullanıcı seçimleri
+          // değiştirmek zorunda kalmadan tekrar deneyebilmeli.
+          const retryable =
+            payload?.code === 'slicer_unavailable' ||
+            payload?.code === 'slicer_timeout' ||
+            payload?.code === 'slicing_disabled';
           toast.error(payload?.error ?? 'Dilimleme yapılamadı', {
-            description: 'Fiyat, dilimleme tamamlanmadan gösterilmiyor.',
+            description: retryable
+              ? 'Fiyat, dilimleme tamamlanmadan gösterilmiyor. Birkaç saniye sonra tekrar deneyin.'
+              : 'Fiyat, dilimleme tamamlanmadan gösterilmiyor.',
+            action: retryable
+              ? { label: 'Tekrar dene', onClick: () => setRetryToken((value) => value + 1) }
+              : undefined,
           });
           return;
         }
@@ -830,6 +850,7 @@ export default function UploadDetailPage() {
                 minQuantity={1}
                 priceSource={priceSource}
                 slicing={isSlicing}
+                errorMessage={priceError}
                 locked={
                   requireSlicing &&
                   selectedMaterial?.technology !== 'SLA' &&

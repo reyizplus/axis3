@@ -59,6 +59,12 @@ interface PriceDisplayProps {
    */
   locked?: boolean;
   lockedMessage?: string;
+  /**
+   * Fiyat hiç üretilemediyse (dilimleyici yok, dilimleme reddedildi vb.) gösterilecek
+   * mesaj. `pricing` null kalır ama panel boş "seçim yapın" durumuna düşmez;
+   * kullanıcı sebebi görür ve `onRetry` ile tekrar deneyebilir.
+   */
+  errorMessage?: string | null;
   /** Kilitliyken fiyatı yeniden doğrulamayı dener (dilimleme hatası sonrası). */
   onRetry?: () => void;
 }
@@ -82,6 +88,7 @@ export function PriceDisplay({
   slicing = false,
   locked = false,
   lockedMessage = 'Fiyat doğrulanamadı',
+  errorMessage = null,
   onRetry,
 }: PriceDisplayProps) {
   const [displayPrice, setDisplayPrice] = useState(0);
@@ -138,7 +145,11 @@ export function PriceDisplay({
   }
 
   if (!pricing || !pricing.success) {
-    const failed = !!pricing && !pricing.success;
+    // Hata iletisi iki kaynaktan gelebilir: fiyat yanıtı (`pricing.error`) veya
+    // sayfanın tuttuğu son hata (`errorMessage`). İkincisi, fiyat hiç
+    // üretilemediğinde panelin "seçim yapın" durumuna geri dönmesini engeller.
+    const failureMessage = errorMessage || (pricing && !pricing.success ? pricing.error ?? null : null);
+    const failed = Boolean(failureMessage);
 
     return (
       <Card className="glass-light dark:glass">
@@ -167,7 +178,7 @@ export function PriceDisplay({
               {slicing
                 ? 'Fiyat, model gerçekten dilimlenerek hesaplanıyor. Bu birkaç saniye sürebilir.'
                 : failed
-                  ? pricing.error ?? 'Fiyat hesaplanamadı'
+                  ? failureMessage
                   : 'Fiyat hesaplamak için tüm seçimleri tamamlayın'}
             </p>
             {slicing && (

@@ -152,6 +152,14 @@ services:
       # Redis (Local)
       REDIS_URL: redis://redis:6379
 
+      # PrusaSlicer sidecar. Uretimde de ayni compose/ag icinde calismali:
+      # aksi halde fiyat ve gercek takim yolu onizlemesi "slicer_unavailable"
+      # (fetch failed) ile 503 doner.
+      SLICER_URL: http://slicer:8000
+      SLICER_TOKEN: ${SLICER_TOKEN:-dev-token}
+      SLICING_ENABLED: ${SLICING_ENABLED:-true}
+      PRICING_REQUIRE_SLICING: ${PRICING_REQUIRE_SLICING:-true}
+
       # Log yazimi container ici loopback uzerinden yapilir (genel alan adi degil)
       INTERNAL_API_BASE_URL: http://127.0.0.1:3000
     volumes:
@@ -163,6 +171,10 @@ services:
       postgres:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      # Slicer ayaga kalkmadan uygulama baslamasin; aksi halde ilk istekler
+      # "Dilimleyiciye ulasilamadi" hatasi aliyordu.
+      slicer:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "node", "-e", "require('http').get('http://localhost:3000/api/health', (r) => {process.exit(r.statusCode === 200 ? 0 : 1)})"]

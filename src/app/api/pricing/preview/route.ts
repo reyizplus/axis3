@@ -379,13 +379,29 @@ export async function POST(request: NextRequest) {
     });
   } catch (error) {
     if (error instanceof SlicerUnavailableError) {
-      return errorResponse(503, 'slicer_unavailable', error.message);
+      // İç servis adresi/DNS hatası müşteriye gösterilmez; log'da kalır.
+      console.error('[preview] dilimleyiciye ulaşılamadı:', error.message);
+      return errorResponse(
+        503,
+        'slicer_unavailable',
+        'Dilimleyici şu an yanıt vermiyor. Lütfen birkaç saniye sonra tekrar deneyin.'
+      );
     }
     if (error instanceof SlicerTimeoutError) {
-      return errorResponse(504, 'slicer_timeout', error.message);
+      console.error('[preview] dilimleme zaman aşımı:', error.message);
+      return errorResponse(
+        504,
+        'slicer_timeout',
+        'Dilimleme zaman aşımına uğradı. Lütfen tekrar deneyin.'
+      );
     }
     if (error instanceof SlicerRejectedError) {
-      return errorResponse(422, 'slicer_rejected', error.message);
+      console.error('[preview] dilimleyici isteği reddetti:', error.message);
+      return errorResponse(
+        422,
+        'slicer_rejected',
+        'Model dilimlenemedi. Model dosyasını kontrol edip tekrar deneyin.'
+      );
     }
 
     console.error('[preview] beklenmeyen hata', error);
