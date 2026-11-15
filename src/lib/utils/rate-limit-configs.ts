@@ -1,7 +1,8 @@
 /**
  * Rate Limit Configurations
  * Different rate limits for different endpoint types
- * Falls back to in-memory rate limiter when Upstash Redis is unavailable
+ * Falls back to in-memory rate limiter when Upstash Redis is unavailable,
+ * including when the configured Redis instance cannot be reached at runtime.
  */
 
 import { Ratelimit } from '@upstash/ratelimit';
@@ -42,7 +43,31 @@ class InMemoryRateLimiter {
   }
 }
 
+interface RateLimitResult {
+  success: boolean;
+  limit: number;
+  remaining: number;
+  reset: number;
+}
+
+/**
+ * The only surface the routes use. Kept structural so both the Upstash limiter
+ * and the in-memory fallback satisfy it.
+ */
+export interface RateLimiterInstance {
+  limit(identifier: string): Promise<RateLimitResult>;
+}
+
 let warnedAboutMemoryFallback = false;
+let warnedAboutRedisFailure = false;
+
+/**
+ * After a Redis failure every request would otherwise wait for the client
+ * timeout again. Skip Redis for a minute and let the in-memory limiter serve
+ * traffic meanwhile.
+ */
+let redisUnavailableUntil = 0;
+const REDIS_RETRY_COOLDOWN_MS = 60_000;
 
 function warnMemoryFallbackOnce(): void {
   if (warnedAboutMemoryFallback) return;
@@ -56,8 +81,20 @@ function warnMemoryFallbackOnce(): void {
   }
 }
 
+function warnRedisFailureOnce(prefix: string, error: unknown): void {
+  if (warnedAboutRedisFailure) return;
+  warnedAboutRedisFailure = true;
+
+  console.warn(
+    `[RateLimit] Upstash Redis (${prefix}) kullanılamıyor; ` +
+    'in-memory fallback aktif. Limitler bu süre boyunca instance bazlıdır.',
+    error instanceof Error ? error.message : error
+  );
+}
+
 /**
- * Create Redis instance
+ * Create Redis instance. One quick retry keeps a transient blip from dropping
+ * the distributed limiter, while a dead endpoint fails fast into the fallback.
  */
 function createRedis(): Redis | null {
   if (!process.env.UPSTASH_REDIS_REST_URL || !process.env.UPSTASH_REDIS_REST_TOKEN) {
@@ -68,26 +105,51 @@ function createRedis(): Redis | null {
   return new Redis({
     url: process.env.UPSTASH_REDIS_REST_URL!,
     token: process.env.UPSTASH_REDIS_REST_TOKEN!,
+    retry: { retries: 1, backoff: () => 100 },
   });
 }
 
-type RateLimiterInstance = Ratelimit | InMemoryRateLimiter;
+function createLimiter(
+  prefix: string,
+  maxLimit: number,
+  window: Parameters<typeof Ratelimit.slidingWindow>[1],
+  windowMs: number
+): RateLimiterInstance {
+  const fallback = new InMemoryRateLimiter(maxLimit, windowMs);
+
+  if (Date.now() < redisUnavailableUntil) return fallback;
+
+  const redis = createRedis();
+  if (!redis) return fallback;
+
+  const primary = new Ratelimit({
+    redis,
+    limiter: Ratelimit.slidingWindow(maxLimit, window),
+    analytics: true,
+    prefix,
+  });
+
+  return {
+    async limit(identifier: string): Promise<RateLimitResult> {
+      if (Date.now() < redisUnavailableUntil) return fallback.limit(identifier);
+
+      try {
+        return await primary.limit(identifier);
+      } catch (error) {
+        redisUnavailableUntil = Date.now() + REDIS_RETRY_COOLDOWN_MS;
+        warnRedisFailureOnce(prefix, error);
+        return fallback.limit(identifier);
+      }
+    },
+  };
+}
 
 /**
  * Contact Form Rate Limiter
  * 5 requests per 10 minutes per IP
  */
 export function createContactRateLimiter(): RateLimiterInstance {
-  const redis = createRedis();
-  if (redis) {
-    return new Ratelimit({
-      redis,
-      limiter: Ratelimit.slidingWindow(5, '10 m'),
-      analytics: true,
-      prefix: 'axis3:contact',
-    });
-  }
-  return new InMemoryRateLimiter(5, 600000);
+  return createLimiter('axis3:contact', 5, '10 m', 600000);
 }
 
 /**
@@ -95,16 +157,7 @@ export function createContactRateLimiter(): RateLimiterInstance {
  * 3 requests per 10 seconds per IP (fraud protection)
  */
 export function createPaymentRateLimiter(): RateLimiterInstance {
-  const redis = createRedis();
-  if (redis) {
-    return new Ratelimit({
-      redis,
-      limiter: Ratelimit.slidingWindow(3, '10 s'),
-      analytics: true,
-      prefix: 'axis3:payment',
-    });
-  }
-  return new InMemoryRateLimiter(3, 10000);
+  return createLimiter('axis3:payment', 3, '10 s', 10000);
 }
 
 /**
@@ -112,16 +165,7 @@ export function createPaymentRateLimiter(): RateLimiterInstance {
  * 5 requests per 10 seconds per IP (brute force protection)
  */
 export function createAuthRateLimiter(): RateLimiterInstance {
-  const redis = createRedis();
-  if (redis) {
-    return new Ratelimit({
-      redis,
-      limiter: Ratelimit.slidingWindow(5, '10 s'),
-      analytics: true,
-      prefix: 'axis3:auth',
-    });
-  }
-  return new InMemoryRateLimiter(5, 10000);
+  return createLimiter('axis3:auth', 5, '10 s', 10000);
 }
 
 /**
@@ -129,16 +173,7 @@ export function createAuthRateLimiter(): RateLimiterInstance {
  * 10 requests per 1 hour per IP
  */
 export function createUploadRateLimiter(): RateLimiterInstance {
-  const redis = createRedis();
-  if (redis) {
-    return new Ratelimit({
-      redis,
-      limiter: Ratelimit.slidingWindow(10, '1 h'),
-      analytics: true,
-      prefix: 'axis3:upload',
-    });
-  }
-  return new InMemoryRateLimiter(10, 3600000);
+  return createLimiter('axis3:upload', 10, '1 h', 3600000);
 }
 
 /**
@@ -146,16 +181,7 @@ export function createUploadRateLimiter(): RateLimiterInstance {
  * 30 requests per 10 seconds per IP
  */
 export function createAdminRateLimiter(): RateLimiterInstance {
-  const redis = createRedis();
-  if (redis) {
-    return new Ratelimit({
-      redis,
-      limiter: Ratelimit.slidingWindow(30, '10 s'),
-      analytics: true,
-      prefix: 'axis3:admin',
-    });
-  }
-  return new InMemoryRateLimiter(30, 10000);
+  return createLimiter('axis3:admin', 30, '10 s', 10000);
 }
 
 /**
@@ -163,14 +189,5 @@ export function createAdminRateLimiter(): RateLimiterInstance {
  * 10 requests per 10 seconds per IP
  */
 export function createGenericRateLimiter(): RateLimiterInstance {
-  const redis = createRedis();
-  if (redis) {
-    return new Ratelimit({
-      redis,
-      limiter: Ratelimit.slidingWindow(10, '10 s'),
-      analytics: true,
-      prefix: 'axis3:generic',
-    });
-  }
-  return new InMemoryRateLimiter(10, 10000);
+  return createLimiter('axis3:generic', 10, '10 s', 10000);
 }
