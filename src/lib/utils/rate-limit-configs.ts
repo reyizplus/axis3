@@ -1,47 +1,11 @@
 /**
  * Rate Limit Configurations
- * Different rate limits for different endpoint types
- * Falls back to in-memory rate limiter when Upstash Redis is unavailable,
- * including when the configured Redis instance cannot be reached at runtime.
+ * Different rate limits for different endpoint types.
+ *
+ * Limits are tracked in process memory only (no external Redis dependency).
+ * State lives on `globalThis` so every route bundle inside one server process
+ * shares the same counters even though each route imports its own copy.
  */
-
-import { Ratelimit } from '@upstash/ratelimit';
-import { Redis } from '@upstash/redis';
-
-// Rate limiting must stay active in every environment. Upstash is used
-// whenever credentials are present; otherwise we fall back to per-instance
-// memory and warn loudly in production (limits are NOT global in that case).
-
-/**
- * In-memory rate limiter fallback for when Redis is unavailable
- */
-class InMemoryRateLimiter {
-  private clients: Map<string, { count: number; resetAt: number }> = new Map();
-  private maxLimit: number;
-  private windowMs: number;
-
-  constructor(maxLimit: number, windowMs: number) {
-    this.maxLimit = maxLimit;
-    this.windowMs = windowMs;
-  }
-
-  async limit(identifier: string): Promise<{ success: boolean; limit: number; remaining: number; reset: number }> {
-    const now = Date.now();
-    const record = this.clients.get(identifier);
-
-    if (!record || now > record.resetAt) {
-      this.clients.set(identifier, { count: 1, resetAt: now + this.windowMs });
-      return { success: true, limit: this.maxLimit, remaining: this.maxLimit - 1, reset: now + this.windowMs };
-    }
-
-    if (record.count >= this.maxLimit) {
-      return { success: false, limit: this.maxLimit, remaining: 0, reset: record.resetAt };
-    }
-
-    record.count++;
-    return { success: true, limit: this.maxLimit, remaining: this.maxLimit - record.count, reset: record.resetAt };
-  }
-}
 
 interface RateLimitResult {
   success: boolean;
@@ -51,95 +15,88 @@ interface RateLimitResult {
 }
 
 /**
- * The only surface the routes use. Kept structural so both the Upstash limiter
- * and the in-memory fallback satisfy it.
+ * The only surface the routes use.
  */
 export interface RateLimiterInstance {
   limit(identifier: string): Promise<RateLimitResult>;
 }
 
-let warnedAboutMemoryFallback = false;
-let warnedAboutRedisFailure = false;
+interface RateLimitRecord {
+  count: number;
+  resetAt: number;
+}
+
+interface RateLimitStore {
+  buckets: Map<string, RateLimitRecord>;
+  lastSweepAt: number;
+}
+
+const SWEEP_INTERVAL_MS = 60_000;
+
+const globalStore = globalThis as typeof globalThis & {
+  __axis3RateLimitStore?: RateLimitStore;
+};
+
+const store: RateLimitStore =
+  globalStore.__axis3RateLimitStore ??
+  (globalStore.__axis3RateLimitStore = { buckets: new Map(), lastSweepAt: 0 });
 
 /**
- * After a Redis failure every request would otherwise wait for the client
- * timeout again. Skip Redis for a minute and let the in-memory limiter serve
- * traffic meanwhile.
+ * Drop expired buckets so a long-running process cannot grow without bound.
+ * Runs at most once per minute and only touches entries whose window ended.
  */
-let redisUnavailableUntil = 0;
-const REDIS_RETRY_COOLDOWN_MS = 60_000;
+function sweepExpired(now: number): void {
+  if (now - store.lastSweepAt < SWEEP_INTERVAL_MS) return;
+  store.lastSweepAt = now;
 
-function warnMemoryFallbackOnce(): void {
-  if (warnedAboutMemoryFallback) return;
-  warnedAboutMemoryFallback = true;
+  for (const [key, record] of store.buckets) {
+    if (now > record.resetAt) store.buckets.delete(key);
+  }
+}
+
+function consume(key: string, maxLimit: number, windowMs: number): RateLimitResult {
+  const now = Date.now();
+  sweepExpired(now);
+
+  const record = store.buckets.get(key);
+
+  if (!record || now > record.resetAt) {
+    store.buckets.set(key, { count: 1, resetAt: now + windowMs });
+    return { success: true, limit: maxLimit, remaining: maxLimit - 1, reset: now + windowMs };
+  }
+
+  if (record.count >= maxLimit) {
+    return { success: false, limit: maxLimit, remaining: 0, reset: record.resetAt };
+  }
+
+  record.count++;
+  return { success: true, limit: maxLimit, remaining: maxLimit - record.count, reset: record.resetAt };
+}
+
+let warnedAboutInstanceLimits = false;
+
+/**
+ * Limits are per server instance. Warn once in production so nobody assumes
+ * they are global across a multi-instance deployment.
+ */
+function warnInstanceLimitsOnce(prefix: string): void {
+  if (warnedAboutInstanceLimits) return;
+  warnedAboutInstanceLimits = true;
 
   if (process.env.NODE_ENV === 'production') {
     console.warn(
-      '[RateLimit] UPSTASH_REDIS_REST_URL/TOKEN tanımlı değil. In-memory fallback kullanılıyor: ' +
-      'çok instance/serverless ortamda limitler GLOBAL DEĞİLDİR. Production için Upstash yapılandırın.'
+      `[RateLimit] In-memory rate limiter aktif (${prefix}). Limitler sunucu instance'i ` +
+      'bazındadır; birden fazla instance çalıştırıldığında toplam limit instance sayısıyla çarpılır.'
     );
   }
 }
 
-function warnRedisFailureOnce(prefix: string, error: unknown): void {
-  if (warnedAboutRedisFailure) return;
-  warnedAboutRedisFailure = true;
-
-  console.warn(
-    `[RateLimit] Upstash Redis (${prefix}) kullanılamıyor; ` +
-    'in-memory fallback aktif. Limitler bu süre boyunca instance bazlıdır.',
-    error instanceof Error ? error.message : error
-  );
-}
-
-/**
- * Create Redis instance. One quick retry keeps a transient blip from dropping
- * the distributed limiter, while a dead endpoint fails fast into the fallback.
- */
-function createRedis(): Redis | null {
-  if (!process.env.UPSTASH_REDIS_REST_URL || !process.env.UPSTASH_REDIS_REST_TOKEN) {
-    warnMemoryFallbackOnce();
-    return null;
-  }
-
-  return new Redis({
-    url: process.env.UPSTASH_REDIS_REST_URL!,
-    token: process.env.UPSTASH_REDIS_REST_TOKEN!,
-    retry: { retries: 1, backoff: () => 100 },
-  });
-}
-
-function createLimiter(
-  prefix: string,
-  maxLimit: number,
-  window: Parameters<typeof Ratelimit.slidingWindow>[1],
-  windowMs: number
-): RateLimiterInstance {
-  const fallback = new InMemoryRateLimiter(maxLimit, windowMs);
-
-  if (Date.now() < redisUnavailableUntil) return fallback;
-
-  const redis = createRedis();
-  if (!redis) return fallback;
-
-  const primary = new Ratelimit({
-    redis,
-    limiter: Ratelimit.slidingWindow(maxLimit, window),
-    analytics: true,
-    prefix,
-  });
+function createLimiter(prefix: string, maxLimit: number, windowMs: number): RateLimiterInstance {
+  warnInstanceLimitsOnce(prefix);
 
   return {
     async limit(identifier: string): Promise<RateLimitResult> {
-      if (Date.now() < redisUnavailableUntil) return fallback.limit(identifier);
-
-      try {
-        return await primary.limit(identifier);
-      } catch (error) {
-        redisUnavailableUntil = Date.now() + REDIS_RETRY_COOLDOWN_MS;
-        warnRedisFailureOnce(prefix, error);
-        return fallback.limit(identifier);
-      }
+      return consume(`${prefix}:${identifier}`, maxLimit, windowMs);
     },
   };
 }
@@ -149,7 +106,7 @@ function createLimiter(
  * 5 requests per 10 minutes per IP
  */
 export function createContactRateLimiter(): RateLimiterInstance {
-  return createLimiter('axis3:contact', 5, '10 m', 600000);
+  return createLimiter('axis3:contact', 5, 600000);
 }
 
 /**
@@ -157,7 +114,7 @@ export function createContactRateLimiter(): RateLimiterInstance {
  * 3 requests per 10 seconds per IP (fraud protection)
  */
 export function createPaymentRateLimiter(): RateLimiterInstance {
-  return createLimiter('axis3:payment', 3, '10 s', 10000);
+  return createLimiter('axis3:payment', 3, 10000);
 }
 
 /**
@@ -165,7 +122,7 @@ export function createPaymentRateLimiter(): RateLimiterInstance {
  * 5 requests per 10 seconds per IP (brute force protection)
  */
 export function createAuthRateLimiter(): RateLimiterInstance {
-  return createLimiter('axis3:auth', 5, '10 s', 10000);
+  return createLimiter('axis3:auth', 5, 10000);
 }
 
 /**
@@ -173,7 +130,7 @@ export function createAuthRateLimiter(): RateLimiterInstance {
  * 10 requests per 1 hour per IP
  */
 export function createUploadRateLimiter(): RateLimiterInstance {
-  return createLimiter('axis3:upload', 10, '1 h', 3600000);
+  return createLimiter('axis3:upload', 10, 3600000);
 }
 
 /**
@@ -181,7 +138,7 @@ export function createUploadRateLimiter(): RateLimiterInstance {
  * 30 requests per 10 seconds per IP
  */
 export function createAdminRateLimiter(): RateLimiterInstance {
-  return createLimiter('axis3:admin', 30, '10 s', 10000);
+  return createLimiter('axis3:admin', 30, 10000);
 }
 
 /**
@@ -189,5 +146,5 @@ export function createAdminRateLimiter(): RateLimiterInstance {
  * 10 requests per 10 seconds per IP
  */
 export function createGenericRateLimiter(): RateLimiterInstance {
-  return createLimiter('axis3:generic', 10, '10 s', 10000);
+  return createLimiter('axis3:generic', 10, 10000);
 }

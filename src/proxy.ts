@@ -11,8 +11,12 @@ const protectedRoutes = [
   '/admin',     // Hafta 7 - Admin Panel
 ];
 
-// Auth routes that should redirect to dashboard if user is already logged in
-const authRoutes = ['/login', '/register', '/forgot-password', '/reset-password', '/verify'];
+// Auth routes that should redirect to dashboard if user is already logged in.
+// NOTE: `/reset-password` is intentionally NOT listed. Şifre sıfırlama
+// bağlantısı e-postadan açıldığında kullanıcı başka bir tarayıcıda/cihazda
+// oturum açmış olabilir; bu durumda panele yönlendirmek bağlantıyı "bozuk"
+// gösteriyordu. Token doğrulaması zaten sıfırlama formunda yapılıyor.
+const authRoutes = ['/login', '/register', '/forgot-password', '/verify'];
 
 // Marketing (tanıtım) sayfaları. Giriş yapmış kullanıcı bu sayfalara gelirse
 // doğrudan panele alınır: mağaza, sepet, ödeme, sipariş takibi ve yasal metinler
@@ -341,6 +345,16 @@ export async function proxy(request: NextRequest, event: NextFetchEvent) {
       status: 403,
       headers: { 'content-type': 'text/plain; charset=utf-8' },
     });
+  }
+
+  // Legacy redirect: eski şifre sıfırlama e-postaları `/auth/sifre-sifirla?ref=...`
+  // adresine gidiyordu ama böyle bir sayfa hiç olmadığı için bağlantı 404
+  // dönüyordu. Token'ı gerçek sayfaya taşıyoruz (yeni e-postalar doğrudan
+  // /reset-password kullanıyor).
+  if (pathname === '/auth/sifre-sifirla') {
+    const url = request.nextUrl.clone();
+    url.pathname = '/reset-password';
+    return NextResponse.redirect(url);
   }
 
   // API routes are not covered by the session-refresh flow (see matcher).

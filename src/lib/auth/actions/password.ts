@@ -47,10 +47,25 @@ export async function requestPasswordReset(email: string): Promise<AuthResult> {
       expires_at: expiresAt.toISOString(),
     });
 
-    const resetUrl = `${process.env.NEXT_PUBLIC_APP_URL}/auth/sifre-sifirla?ref=${urlToken}`;
+    // Bağlantı, formun token'ı okuduğu gerçek sayfaya (/reset-password?ref=...)
+    // işaret etmek zorunda. Önceden /auth/sifre-sifirla kullanılıyordu ve bu
+    // route mevcut olmadığı için e-postadaki bağlantı 404 dönüyordu.
+    const appUrl = (process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000').replace(/\/+$/, '');
+    const resetUrl = `${appUrl}/reset-password?ref=${urlToken}`;
 
-    await mailService.sendPasswordResetEmail(normalizedEmail, resetUrl);
+    const mailResult = await mailService.sendPasswordResetEmail(normalizedEmail, resetUrl);
     await recordRateLimitAttempt(`password-reset:${normalizedEmail}`, 'password-reset');
+
+    if (!mailResult.success) {
+      // Kullanıcıya "gönderildi" demek yerine gerçek durumu bildir; aksi halde
+      // e-posta hiç gitmediği için bağlantı çalışmıyor gibi görünüyordu.
+      console.error('[requestPasswordReset] Mail gönderilemedi:', mailResult.error);
+      return {
+        success: false,
+        error: 'Şifre sıfırlama e-postası gönderilemedi. Lütfen daha sonra tekrar deneyin.',
+      };
+    }
+
     await logAuthEvent('PASSWORD_RESET_REQUEST', user.id, normalizedEmail);
 
     return { success: true, message: 'Şifre sıfırlama bağlantısı e-posta adresinize gönderildi' };
