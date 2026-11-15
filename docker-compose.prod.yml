@@ -1,0 +1,100 @@
+# Axis3 — üretim yığını (VPS sunucu)
+#
+# Neden ayrı dosya?
+#   `docker-compose.yml` geliştirme içindir: `app` servisi `.env.local`, yerel
+#   postgres ve redis bekler. Üretimde veritabanı Supabase'de olduğu için
+#   yalnızca iki servis gerekir:
+#
+#     app     → Next.js (nginx localhost:3000'e proxy yapar)
+#     slicer  → PrusaSlicer sidecar (yalnızca iç ağ; host'a port açılmaz)
+#
+#   Dilimleyici olmadan uygulama **fiyat üretmez**: /api/pricing/slice ve
+#   /api/pricing/preview 503 (slicer_unavailable) döner. Bu yüzden burası ve
+#   `docker-compose.yml` içindeki slicer tanımı aynı ortam değişkenlerini taşır.
+#
+# Kullanım (sunucuda, depo kökünde):
+#   docker compose -f docker-compose.prod.yml up -d --build
+#   docker compose -f docker-compose.prod.yml logs -f slicer
+#
+# Doğrulama:
+#   curl -s 'https://<alan-adiniz>/api/health?deep=1'   → slicer.ok:true
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: axis3-production
+    restart: unless-stopped
+    # Nginx aynı sunucuda çalışıyorsa yalnızca loopback'e açmak yeterlidir:
+    #   - "127.0.0.1:3000:3000"
+    # Nginx başka bir konteynerdeyse (ör. cloudflared/traefik) geniş bağlama gerekir.
+    ports:
+      - "3000:3000"
+    env_file:
+      - .env.production
+    environment:
+      NODE_ENV: production
+
+      # --- Dilimleme (fiyat otoritesi) -------------------------------------
+      # Servis adı: compose servis adı "slicer" çözümlenir (container_name değil).
+      SLICER_URL: http://slicer:8000
+      # Token kullanılacaksa iki servise de aynı değer verilir; boşsa kimlik
+      # doğrulama kapalıdır (sidecar yalnızca iç ağda olduğu için kabul edilebilir).
+      SLICER_TOKEN: ${SLICER_TOKEN:-}
+      # Kill switch: false → fiyat hacim tahminine düşer.
+      SLICING_ENABLED: ${SLICING_ENABLED:-true}
+      # true → sipariş, gerçek dilimleme doğrulanmadan oluşturulmaz (K1 kararı).
+      PRICING_REQUIRE_SLICING: ${PRICING_REQUIRE_SLICING:-true}
+
+      # Log yazımı konteyner içi loopback üzerinden yapılır (genel alan adı değil).
+      INTERNAL_API_BASE_URL: http://127.0.0.1:3000
+    volumes:
+      # Kalıcı loglar; named volume, bind mount değil (uid 1001 yazabilsin).
+      - logs_data:/app/logs
+    depends_on:
+      # Slicer sağlıklı olmadan uygulama başlamasın; aksi halde ilk fiyat
+      # istekleri "Dilimleyiciye ulaşılamadı" ile 503 döner.
+      slicer:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3000/api/health', (r) => {process.exit(r.statusCode === 200 ? 0 : 1)})"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 40s
+    networks:
+      - axis3-prod
+
+  slicer:
+    build: ./slicer
+    container_name: axis3-slicer
+    restart: unless-stopped
+    # Host portu BİLİNÇLİ olarak açılmaz: yalnızca axis3-prod ağından erişilir.
+    expose:
+      - "8000"
+    environment:
+      # Uygulama ile paylaşılan gizli anahtar; boşsa kimlik doğrulama kapalı.
+      SLICER_TOKEN: ${SLICER_TOKEN:-}
+      # CPU koruması: aynı anda dilimlenen model sayısı.
+      SLICER_MAX_CONCURRENCY: ${SLICER_MAX_CONCURRENCY:-2}
+    cpus: "2.0"
+    mem_limit: 2g
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      # PrusaSlicer imajı ilk açılışta apt katmanından gelir; soğuk başlangış payı.
+      start_period: 20s
+    networks:
+      - axis3-prod
+
+networks:
+  axis3-prod:
+    driver: bridge
+    name: axis3-prod
+
+volumes:
+  logs_data:
+    name: axis3-logs
