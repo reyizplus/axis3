@@ -9,12 +9,10 @@
  *
  * Features:
  * - Get user orders
- * - Update order status (admin)
  * - Cancel an unpaid order (delegates to the server so stock is released)
  */
 
 import { createClient } from '@/lib/supabase/client';
-import { notifyOrderStatusChange } from '@/lib/services/order-notification-service';
 
 // =====================================================
 // TYPES & INTERFACES
@@ -178,66 +176,6 @@ export class OrderService {
       };
     } catch (error) {
       console.error('Get order error:', error);
-      return { success: false, error: 'Beklenmeyen bir hata oluştu' };
-    }
-  }
-
-  /**
-   * Update order status
-   * @param orderId - Order ID
-   * @param status - New status
-   * @param userId - User ID (for authorization)
-   */
-  async updateOrderStatus(
-    orderId: string,
-    status: OrderStatus,
-    userId?: string
-  ): Promise<{ success: boolean; error?: string }> {
-    try {
-                              // Get old status before update
-      const { data: oldOrder } = await (this.supabase
-        .from('orders') as any)
-        .select('status')
-        .eq('id', orderId)
-        .single();
-
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const oldStatus = oldOrder ? (oldOrder as any).status : 'unknown';
-            const query = (this.supabase
-        .from('orders') as any)
-        .update({ status, updated_at: new Date().toISOString() })
-        .eq('id', orderId);
-
-      // If userId provided, ensure user owns the order
-      if (userId) {
-        query.eq('user_id', userId);
-      }
-
-      const { error } = await query;
-
-      if (error) {
-        console.error('[OrderService.updateOrderStatus] ❌ Failed to update order status:', error);
-        return { success: false, error: 'Sipariş durumu güncellenemedi' };
-      }
-
-      // Send the status e-mail through the shared notification service so the
-      // message always includes the customer and the order items.
-      if (oldStatus !== status) {
-        notifyOrderStatusChange(orderId, oldStatus, status)
-          .then((result) => {
-            if (!result.success) {
-              console.warn('[OrderService.updateOrderStatus] Status email not sent:', result.error);
-            }
-          })
-          .catch((error) => {
-            console.error('[OrderService.updateOrderStatus] ❌ Failed to send status update email:', error);
-            // Don't fail the status update if email fails
-          });
-      }
-
-      return { success: true };
-    } catch (error) {
-      console.error('[OrderService.updateOrderStatus] ❌ Exception:', error);
       return { success: false, error: 'Beklenmeyen bir hata oluştu' };
     }
   }
