@@ -757,9 +757,41 @@ export async function createOrder(input: CreateOrderInput): Promise<CreatedOrder
     });
 
     if (!check.ok) {
+      // Sistem kapalıysa (available=false) bu bir kupon reddi değil, altyapı
+      // sorunudur; istemci kuponu silmemeli.
+      if (!check.available) {
+        throw new OrderCreationError(check.evaluation.message, 503);
+      }
+
+      /**
+       * Kupon reddedildi (ör. tek kullanımlık kupon zaten kullanılmış).
+       * İstemci kuponu kaldırıp yeni tutarı gösterebilsin diye kuponsuz
+       * toplamlar da gönderilir. Sipariş, müşteri yeni tutarı onaylayana kadar
+       * oluşturulmaz: kupon sessizce düşüp tutar değişmemeli.
+       */
+      const withoutCoupon = calculateOrderTotals({
+        itemsSubtotal,
+        vatRate: settings.vatRate,
+        shippingFee: settings.shippingFee,
+        freeShippingMinAmount: settings.freeShippingMinAmount,
+      });
+
       throw new OrderCreationError(
         check.evaluation.message,
-        check.available ? couponFailureStatus(check.evaluation.reason) : 503
+        couponFailureStatus(check.evaluation.reason),
+        {
+          code: 'coupon_invalid',
+          details: {
+            reason: check.evaluation.reason,
+            totals: {
+              subtotal: withoutCoupon.subtotal,
+              discount: withoutCoupon.discount,
+              shipping: withoutCoupon.shipping,
+              vat: withoutCoupon.vat,
+              total: withoutCoupon.total,
+            },
+          },
+        }
       );
     }
 

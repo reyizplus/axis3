@@ -87,14 +87,24 @@ export function useCoupon(totals: CouponCartTotals): UseCouponResult {
     // code so it comes back to life when the user adds items again.
     if (toCents(totalsRef.current.itemsSubtotal) <= 0) return;
 
+    /**
+     * İlk doğrulama (localStorage'dan gelen kupon) beklemesiz yapılır: kupon
+     * geçersizse kullanıcı "Siparişi Tamamla"ya basmadan önce kaldırılmalı.
+     * Aksi halde ilk tıklama sunucuda kupon hatasıyla döner, kupon sessizce
+     * düşer ve ikinci tıklama daha yüksek tutarla sipariş oluşturur.
+     */
+    const isInitialHydration = lastValidated.current === null;
+
     lastValidated.current = signature;
     let active = true;
 
+    // Butonu meşgul göster: doğrulanmamış kuponla sipariş gönderilmesin.
+    setIsChecking(true);
+
     // Quantity buttons can be clicked several times in a row; wait until the
     // cart settles before spending a validate request (the endpoint is rate
-    // limited per user).
+    // limited per user). The very first check is not debounced.
     const timer = setTimeout(() => {
-      setIsChecking(true);
 
       void validateCouponCode(coupon.code, totalsRef.current).then((result) => {
         if (!active) return;
@@ -112,6 +122,15 @@ export function useCoupon(totals: CouponCartTotals): UseCouponResult {
           return;
         }
 
+        // `reason` yalnızca sunucu kuponu gerçekten reddettiğinde gelir
+        // (ör. "yalnızca ilk sipariş"). Ağ/oturum/limit hatasında kuponu
+        // düşürmek sepeti sessizce pahalılaştırır; kuponu koruyup uyarırız.
+        if (!result.reason) {
+          setError(result.error);
+          lastValidated.current = null;
+          return;
+        }
+
         clearAppliedCoupon();
         setCoupon(null);
         setError(null);
@@ -120,7 +139,7 @@ export function useCoupon(totals: CouponCartTotals): UseCouponResult {
         );
         lastValidated.current = null;
       });
-    }, 500);
+    }, isInitialHydration ? 0 : 500);
 
     return () => {
       active = false;

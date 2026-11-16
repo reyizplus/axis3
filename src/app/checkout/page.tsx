@@ -82,8 +82,12 @@ export default function CheckoutPage() {
    * güncellenmezse her "Siparişi Tamamla" aynı hatayı verir.
    */
   const [priceChange, setPriceChange] = useState<{
+    /** `coupon`: kupon düştüğü için tutar değişti, `prices`: kalem/kargo fiyatı değişti. */
+    kind: 'prices' | 'coupon';
     previousTotal: number;
     total: number;
+    /** Kupon neden geçersiz oldu (sunucunun mesajı). */
+    message?: string;
   } | null>(null);
 
   const [viewerOpen, setViewerOpen] = useState(false);
@@ -151,7 +155,7 @@ export default function CheckoutPage() {
     setShippingFee(shipSettings.shippingFee);
     setFreeShippingMinAmount(shipSettings.freeShippingMinAmount);
 
-    setPriceChange({ previousTotal, total: details.totals.total });
+    setPriceChange({ kind: 'prices', previousTotal, total: details.totals.total });
     toast.error(
       'Sepet fiyatları güncellendi. Yeni tutarı kontrol edip siparişi tekrar onaylayın.'
     );
@@ -219,6 +223,28 @@ export default function CheckoutPage() {
           await applyServerPriceChange(result.details as PriceChangeDetails, expectedTotal);
           return;
         }
+
+        // Kupon sunucuda geçersiz (ör. tek kullanımlık kupon kullanılmış).
+        // Kupon sessizce düşüp tutar değişmesin: kaldır, yeni tutarı göster ve
+        // siparişi ancak müşteri tekrar onayladığında oluştur.
+        if (result?.code === 'coupon_invalid') {
+          const details = result.details as
+            | { reason?: string; totals?: { total?: number } }
+            | undefined;
+          couponState.remove();
+          const newTotal = Number(details?.totals?.total);
+          setPriceChange({
+            kind: 'coupon',
+            previousTotal: expectedTotal,
+            total: Number.isFinite(newTotal) ? newTotal : expectedTotal,
+            message: typeof result.error === 'string' ? result.error : undefined,
+          });
+          toast.error(
+            `${result.error || 'Kupon geçersiz'} Kupon kaldırıldı; yeni tutarı görüp siparişi tekrar onaylayın.`
+          );
+          return;
+        }
+
         throw new Error(result?.error || 'Sipariş oluşturulamadı');
       }
 
@@ -678,9 +704,10 @@ export default function CheckoutPage() {
                     <div className="rounded-xl border border-amber-500/40 bg-amber-500/10 px-3 py-2.5 text-xs text-amber-700 dark:text-amber-400 space-y-0.5">
                       <p className="font-semibold flex items-center gap-1.5">
                         <AlertCircle className="h-3.5 w-3.5 shrink-0" />
-                        Sepet fiyatları güncellendi
+                        {priceChange.kind === 'coupon' ? 'Kupon kaldırıldı' : 'Sepet fiyatları güncellendi'}
                       </p>
                       <p>
+                        {priceChange.message && <>{priceChange.message}. </>}
                         Yeni toplam{' '}
                         <span className="font-semibold">{priceChange.total.toFixed(2)} TL</span>
                         {priceChange.previousTotal !== priceChange.total && (
