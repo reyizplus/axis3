@@ -72,16 +72,25 @@ function CartContent() {
           .select('id, price, stock_quantity, track_stock, allow_backorder, is_active').in('id', productIds);
         const productMap: Record<string, any> = {};
         if (products) for (const p of products) productMap[(p as any).id] = p;
-        const verified = storedStoreItems.filter(item => {
+        let storePricesChanged = false;
+        const verified = storedStoreItems.flatMap(item => {
           const db = productMap[item.productId];
-          if (!db || !db.is_active) { toast.error(`"${item.name}" artık mevcut değil`); return false; }
-          if (db.price !== item.unitPrice) toast.error(`"${item.name}" fiyatı güncellendi`);
+          if (!db || !db.is_active) { toast.error(`"${item.name}" artık mevcut değil`); storePricesChanged = true; return []; }
           if (db.track_stock && !db.allow_backorder && db.stock_quantity < item.quantity)
             toast.error(`"${item.name}" için yeterli stok yok (kalan: ${db.stock_quantity})`);
-          return true;
+          // Fiyat sunucuda ürün tablosundan okunur; sepet eski fiyatı gösterirse
+          // sipariş "Fiyatlar güncellendi" (409) ile reddedilir. Sepeti burada
+          // DB fiyatıyla eşitleyip müşteriye doğru tutarı gösteriyoruz.
+          const unitPrice = Number(db.price);
+          if (Number.isFinite(unitPrice) && unitPrice !== item.unitPrice) {
+            toast.error(`"${item.name}" fiyatı güncellendi`);
+            storePricesChanged = true;
+            return [{ ...item, unitPrice, totalPrice: unitPrice * item.quantity }];
+          }
+          return [item];
         });
         setStoreItems(verified);
-        if (verified.length !== storedStoreItems.length) saveStoreItems(verified);
+        if (storePricesChanged) saveStoreItems(verified);
       } else { setStoreItems(storedStoreItems); }
       if (items.length > 0) { setIsCalculatingDelivery(true); const d = await calculateCartDeliveryDays(items); setEstimatedDays(d); }
       setVatRate(await getVatRate());

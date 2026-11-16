@@ -18,6 +18,7 @@ import { PricingEngine, isSlicingEnabled } from '@/lib/pricing';
 import { normalizeVatRate } from '@/lib/pricing/core';
 import type { PriceBreakdown as EngineBreakdown } from '@/lib/pricing/types';
 import { calculateOrderTotals, hasPriceDrift } from '@/lib/services/order-totals';
+import type { PriceChangeDetails } from '@/lib/services/order-totals';
 import {
   COUPON_UNAVAILABLE_MESSAGE,
   checkCoupon,
@@ -100,13 +101,29 @@ export interface CreatedOrder {
 
 export class OrderCreationError extends Error {
   status: number;
+  /** Machine-readable reason so the client can react (e.g. `price_changed`). */
+  code?: string;
+  /** Structured extra data for the client; never used for pricing. */
+  details?: unknown;
 
-  constructor(message: string, status = 400) {
+  constructor(
+    message: string,
+    status = 400,
+    options?: { code?: string; details?: unknown }
+  ) {
     super(message);
     this.name = 'OrderCreationError';
     this.status = status;
+    this.code = options?.code;
+    this.details = options?.details;
   }
 }
+
+/**
+ * `409 price_changed` yanıtıyla birlikte dönen veri; tanımı `order-totals` içinde
+ * (istemci de aynı tipi kullanır).
+ */
+export type { PriceChangeDetails };
 
 const MAX_QUANTITY = 1000;
 
@@ -771,9 +788,29 @@ export async function createOrder(input: CreateOrderInput): Promise<CreatedOrder
   // Detect a price drift between what the user saw and the server-computed
   // amount. The expected value is never used for pricing.
   if (hasPriceDrift(input.expectedTotal, total)) {
+    const details: PriceChangeDetails = {
+      totals: { subtotal, discount, shipping, vat, total },
+      items: resolvedItems.map((item, index) => ({
+        index,
+        unitPrice: item.unitPrice,
+        totalPrice: item.totalPrice,
+        supportEnabled: item.supportEnabled,
+        printSettingId: item.printSettingId,
+        isPreorder: item.isPreorder,
+        preorderDiscountPercent: item.preorderDiscountPercent,
+        estimatedRestockDays: item.estimatedRestockDays,
+      })),
+      storeItems: resolvedStoreItems.map((item, index) => ({
+        index,
+        unitPrice: item.unitPrice,
+        totalPrice: item.totalPrice,
+      })),
+    };
+
     throw new OrderCreationError(
       'Fiyatlar güncellendi. Lütfen sepetinizi kontrol edip tekrar deneyin.',
-      409
+      409,
+      { code: 'price_changed', details }
     );
   }
 

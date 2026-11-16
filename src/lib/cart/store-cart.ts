@@ -47,6 +47,33 @@ export function clearStoreCart() {
   syncStoreCart([]);
 }
 
+/**
+ * Sunucunun hesapladığı mağaza fiyatlarını sepete uygular.
+ *
+ * Sipariş `409 price_changed` döndüğünde (ör. admin ürün fiyatını değiştirdi)
+ * istemci bunu çağırır; aksi hâlde sepet eski fiyatı gösterip her denemede
+ * aynı hataya düşer. `index`, istekteki `storeItems` sırasıyla aynıdır.
+ */
+export function applyStoreItemPrices(
+  updates: { index: number; unitPrice: number; totalPrice: number }[]
+): boolean {
+  if (typeof window === 'undefined') return false;
+
+  const items = getStoreItems();
+  let applied = false;
+
+  for (const update of updates) {
+    const item = items[update.index];
+    if (!item) continue;
+    item.unitPrice = update.unitPrice;
+    item.totalPrice = update.totalPrice;
+    applied = true;
+  }
+
+  if (applied) saveStoreItems(items);
+  return applied;
+}
+
 export function getStoreCartVersion(): number {
   try {
     return parseInt(localStorage.getItem('axis3_cart_store_version') || '0', 10);

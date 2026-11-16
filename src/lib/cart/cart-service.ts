@@ -183,6 +183,58 @@ export class CartService {
     }
   }
 
+  /**
+   * Sunucunun hesapladığı fiyatları sepete uygular.
+   *
+   * Sipariş oluşturma `409 price_changed` döndüğünde istemci bu metodu çağırır:
+   * aksi hâlde sepet, sunucunun artık kabul etmediği eski tutarı göstermeye
+   * devam eder ve müşteri her denemede aynı hataya çarpar. `index`, sipariş
+   * isteğindeki `items` sırasıyla aynıdır (sunucu aynı sırayı döndürür).
+   */
+  async applyServerPrices(
+    updates: {
+      index: number;
+      unitPrice: number;
+      totalPrice: number;
+      supportEnabled?: boolean;
+      isPreorder?: boolean;
+      preorderDiscountPercent?: number | null;
+      estimatedRestockDays?: number | null;
+    }[]
+  ): Promise<boolean> {
+    if (typeof window === 'undefined') return false;
+
+    const cart = this.getCart();
+    let applied = false;
+
+    for (const update of updates) {
+      const item = cart.items[update.index];
+      if (!item) continue;
+
+      item.unitPrice = update.unitPrice;
+      item.totalPrice = update.totalPrice;
+      if (typeof update.supportEnabled === 'boolean') {
+        item.supportEnabled = update.supportEnabled;
+      }
+      if (typeof update.isPreorder === 'boolean') {
+        item.isPreorder = update.isPreorder;
+      }
+      if (update.preorderDiscountPercent !== undefined) {
+        item.preorderDiscountPercent = update.preorderDiscountPercent ?? null;
+      }
+      if (update.estimatedRestockDays !== undefined) {
+        item.estimatedRestockDays = update.estimatedRestockDays ?? undefined;
+      }
+      applied = true;
+    }
+
+    if (!applied) return false;
+
+    this.saveCart(cart);
+    await this.syncCartToDb(cart);
+    return true;
+  }
+
   async clear(): Promise<void> {
     if (typeof window === 'undefined') return;
 

@@ -19,11 +19,17 @@ import Link from 'next/link';
 import { Dialog3DViewer } from '@/components/ui/dialog-3d-viewer';
 import { calculateCartDeliveryDays } from '@/lib/utils/delivery-calculator';
 import { paymentGatewayService, type EnabledGateway } from '@/lib/services/payment-gateway-service';
-import { getVatRate, getShippingSettings } from '@/lib/services/settings-service';
+import { getVatRate, getShippingSettings, resetVatRateCache, resetShippingSettingsCache } from '@/lib/services/settings-service';
 import { calculateOrderTotals } from '@/lib/services/order-totals';
+import type { PriceChangeDetails } from '@/lib/services/order-totals';
 import { useCoupon } from '@/lib/cart/use-coupon';
 import { CouponInput } from '@/components/checkout/coupon-input';
-import { getStoreItems, clearStoreCart, type StoreItem } from '@/lib/cart/store-cart';
+import {
+  getStoreItems,
+  clearStoreCart,
+  applyStoreItemPrices,
+  type StoreItem,
+} from '@/lib/cart/store-cart';
 import { SavedAddressSelector } from '@/components/checkout/saved-address-selector';
 import { saveAddress } from '@/lib/services/address-service';
 import { Switch } from '@/components/ui/switch';
@@ -70,6 +76,16 @@ export default function CheckoutPage() {
   const [saveAddressCheck, setSaveAddressCheck] = useState(true);
   const [addressTitle, setAddressTitle] = useState('Ev');
 
+  /**
+   * Sunucu `409 price_changed` döndürdüğünde sepet bu fiyatlarla güncellenir ve
+   * müşteriye yeni tutar gösterilir. Kilitlenmeyi önleyen yer burasıdır: sepet
+   * güncellenmezse her "Siparişi Tamamla" aynı hatayı verir.
+   */
+  const [priceChange, setPriceChange] = useState<{
+    previousTotal: number;
+    total: number;
+  } | null>(null);
+
   const [viewerOpen, setViewerOpen] = useState(false);
   const [selectedItem, setSelectedItem] = useState<CartItem | null>(null);
   const [modelUrl, setModelUrl] = useState<string>('');
@@ -111,10 +127,42 @@ export default function CheckoutPage() {
     setErrors(errs); return Object.keys(errs).length === 0;
   };
 
+  /**
+   * `409 price_changed` yanıtını işler: sepeti sunucunun fiyatlarıyla eşitler.
+   * Tutarlar yalnızca gösterim içindir; sipariş yine sunucuda hesaplanır.
+   */
+  const applyServerPriceChange = async (
+    details: PriceChangeDetails,
+    previousTotal: number
+  ) => {
+    const changedServiceItems = await cartService.applyServerPrices(details.items);
+    const changedStoreItems = applyStoreItemPrices(details.storeItems);
+
+    if (changedServiceItems) setCartItems(cartService.getItems());
+    if (changedStoreItems) setStoreItems(getStoreItems());
+
+    // Sapma kalem fiyatlarından değil KDV/kargo ayarlarından da gelebilir;
+    // bu servisler modül düzeyinde önbellekliyor, yenilemezsek ikinci deneme
+    // yine aynı sapmayı üretir.
+    resetVatRateCache();
+    resetShippingSettingsCache();
+    setVatRate(await getVatRate());
+    const shipSettings = await getShippingSettings();
+    setShippingFee(shipSettings.shippingFee);
+    setFreeShippingMinAmount(shipSettings.freeShippingMinAmount);
+
+    setPriceChange({ previousTotal, total: details.totals.total });
+    toast.error(
+      'Sepet fiyatları güncellendi. Yeni tutarı kontrol edip siparişi tekrar onaylayın.'
+    );
+  };
+
   const handlePlaceOrder = async () => {
     if (!validate()) { toast.error('Lütfen formu eksiksiz doldurun'); return; }
     if (!hasServiceItems && !hasStoreItems) { toast.error('Sepetiniz boş'); return; }
     setIsSubmitting(true);
+    setPriceChange(null);
+    const expectedTotal = Math.round(total * 100) / 100;
     try {
       // Sipariş sunucuda oluşturulur: fiyat, stok ve sahiplik doğrulaması
       // API tarafında yapılır. İstemci yalnızca referans ve adres gönderir.
@@ -157,12 +205,20 @@ export default function CheckoutPage() {
           paymentMethod,
           deliveryNotes,
           couponCode: couponState.coupon?.code,
-          expectedTotal: Math.round(total * 100) / 100,
+          expectedTotal,
         }),
       });
 
       const result = await response.json().catch(() => null);
       if (!response.ok || !result?.success) {
+        if (
+          response.status === 409 &&
+          result?.code === 'price_changed' &&
+          result?.details
+        ) {
+          await applyServerPriceChange(result.details as PriceChangeDetails, expectedTotal);
+          return;
+        }
         throw new Error(result?.error || 'Sipariş oluşturulamadı');
       }
 
@@ -615,6 +671,23 @@ export default function CheckoutPage() {
                     <div className="flex items-center gap-2 text-xs text-muted-foreground bg-muted/50 rounded-xl px-3 py-2.5">
                       <Clock className="h-3.5 w-3.5 text-primary shrink-0" />
                       {isCalculatingDelivery ? <><Loader2 className="h-3 w-3 animate-spin mr-1" />Hesaplanıyor...</> : <>Tahmini teslimat: {estimatedDays} gün</>}
+                    </div>
+                  )}
+
+                  {priceChange && (
+                    <div className="rounded-xl border border-amber-500/40 bg-amber-500/10 px-3 py-2.5 text-xs text-amber-700 dark:text-amber-400 space-y-0.5">
+                      <p className="font-semibold flex items-center gap-1.5">
+                        <AlertCircle className="h-3.5 w-3.5 shrink-0" />
+                        Sepet fiyatları güncellendi
+                      </p>
+                      <p>
+                        Yeni toplam{' '}
+                        <span className="font-semibold">{priceChange.total.toFixed(2)} TL</span>
+                        {priceChange.previousTotal !== priceChange.total && (
+                          <> (önceki {priceChange.previousTotal.toFixed(2)} TL)</>
+                        )}{' '}
+                        — kontrol edip siparişi tekrar onaylayın.
+                      </p>
                     </div>
                   )}
 

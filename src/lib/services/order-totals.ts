@@ -83,3 +83,39 @@ export function hasPriceDrift(expectedTotal: number | undefined, serverTotal: nu
 
   return Math.abs(expectedCents - serverCents) > toleranceCents;
 }
+
+/**
+ * `409 price_changed` yanıtıyla istemciye dönen veri.
+ *
+ * Amaç: müşteri "fiyatlar güncellendi" hatasında kilitli kalmasın. Sunucunun
+ * hesapladığı kalem fiyatları ve toplam istemciye gider; istemci sepetini bu
+ * tutarlarla günceller ve müşteri yeni tutarı görüp siparişi tekrar onaylar.
+ * Bu tutarlar yalnızca **gösterim** içindir: sipariş yine sunucunun kendi
+ * hesabıyla oluşturulur, istemciden gelen tutar fiyatlandırmada kullanılmaz.
+ */
+export interface PriceChangeDetails {
+  totals: {
+    subtotal: number;
+    discount: number;
+    shipping: number;
+    vat: number;
+    total: number;
+  };
+  /** İstekteki `items` dizisiyle aynı sırada. */
+  items: {
+    index: number;
+    unitPrice: number;
+    totalPrice: number;
+    supportEnabled: boolean;
+    printSettingId: string | null;
+    isPreorder: boolean;
+    preorderDiscountPercent: number | null;
+    estimatedRestockDays: number | null;
+  }[];
+  /** İstekteki `storeItems` dizisiyle aynı sırada. */
+  storeItems: {
+    index: number;
+    unitPrice: number;
+    totalPrice: number;
+  }[];
+}
