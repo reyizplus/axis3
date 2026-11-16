@@ -35,6 +35,17 @@ export interface PaymentCallbackResponse {
   error?: string;
 }
 
+/**
+ * TC kimlik numarası toplama özelliği geçici olarak devre dışı.
+ *
+ * iyzico, checkout form isteğinde `buyer.identityNumber` alanını zorunlu
+ * tutuyor; kullanıcıdan TCKN istemediğimiz sürece bu alanı sabit bir
+ * yer tutucu ile göndermek zorundayız. Kullanıcının kayıtlı geçerli bir
+ * TCKN'si varsa o kullanılır. Özellik yeniden açılırken bu sabit ve
+ * aşağıdaki fallback kaldırılmalı.
+ */
+const TEMPORARY_BUYER_IDENTITY_NUMBER = '11111111111';
+
 export class PaymentService {
   /**
    * Initialize payment with iyzico
@@ -220,8 +231,7 @@ export class PaymentService {
 
     // `users.identity_number` ships with migration 092. Until it is applied the
     // select fails, which used to surface as "Order not found" on checkout.
-    // Degrade to the columns that do exist; mapBuyer then reports the real
-    // problem (missing TCKN) instead of a misleading order error.
+    // Degrade to the columns that do exist; mapBuyer handles a missing TCKN.
     if (userError && isMissingColumnError(userError, 'identity_number')) {
       ({ data: user, error: userError } = await (supabase
         .from('users') as any)
@@ -256,13 +266,13 @@ export class PaymentService {
     }
     const [firstName, ...lastNameParts] = fullName.split(/\s+/);
 
-    const identityNumber = String(user.identity_number || '').trim();
-    // Turkish ID numbers are 11 digits and never start with 0.
-    if (!/^[1-9]\d{10}$/.test(identityNumber)) {
-      throw new Error(
-        'Ödeme yapabilmek için hesabınıza geçerli bir TC kimlik numarası eklemelisiniz (Ayarlar > Profil Bilgileri).'
-      );
-    }
+    // TC kimlik numarası toplama geçici olarak kapalı: kullanıcıdan hiçbir
+    // adımda TCKN istemiyoruz. Kayıtlı geçerli bir numara varsa onu kullan,
+    // yoksa iyzico'nun zorunlu alanını yer tutucu ile doldur.
+    const storedIdentityNumber = String(user.identity_number || '').trim();
+    const identityNumber = /^[1-9]\d{10}$/.test(storedIdentityNumber)
+      ? storedIdentityNumber
+      : TEMPORARY_BUYER_IDENTITY_NUMBER;
 
     const phone = String(shippingAddress.phone || '').trim();
     if (phone.length < 10) {

@@ -111,10 +111,6 @@ export default function KvkkAydinlatmaMetniPage() {
                   <div className="h-1.5 w-1.5 rounded-full bg-primary mt-2" />
                   <span>Ad, soyad</span>
                 </li>
-                <li className="flex items-start gap-2">
-                  <div className="h-1.5 w-1.5 rounded-full bg-primary mt-2" />
-                  <span>TC kimlik numarası (fatura düzenleme amaçlı)</span>
-                </li>
               </ul>
             </div>
 
