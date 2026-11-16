@@ -14,7 +14,7 @@
  */
 
 import { createClient } from '@/lib/supabase/client';
-import { mailService } from '@/lib/services/mail-service';
+import { notifyOrderStatusChange } from '@/lib/services/order-notification-service';
 
 // =====================================================
 // TYPES & INTERFACES
@@ -26,8 +26,6 @@ export type OrderStatus =
   | 'preparing'
   | 'printing'
   | 'quality_check'
-  | 'washing'
-  | 'curing'
   | 'packaging'
   | 'shipped'
   | 'delivered'
@@ -222,30 +220,20 @@ export class OrderService {
         return { success: false, error: 'Sipariş durumu güncellenemedi' };
       }
 
-            // Fetch complete order with user data for email
-            const { data: completeOrder } = await (this.supabase
-        .from('orders') as any)
-        .select(`
-          *,
-          user:users(email, full_name)
-        `)
-        .eq('id', orderId)
-        .single();
-
-                        // Send status update email (non-blocking)
-      if (completeOrder && oldStatus !== status) {
-                mailService.sendOrderStatusUpdate(completeOrder, oldStatus)
+      // Send the status e-mail through the shared notification service so the
+      // message always includes the customer and the order items.
+      if (oldStatus !== status) {
+        notifyOrderStatusChange(orderId, oldStatus, status)
           .then((result) => {
             if (!result.success) {
               console.warn('[OrderService.updateOrderStatus] Status email not sent:', result.error);
             }
           })
-          .catch(error => {
+          .catch((error) => {
             console.error('[OrderService.updateOrderStatus] ❌ Failed to send status update email:', error);
             // Don't fail the status update if email fails
           });
-      } else {
-              }
+      }
 
       return { success: true };
     } catch (error) {

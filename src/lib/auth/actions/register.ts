@@ -5,6 +5,7 @@ import { registerCompleteSchema, registerEmailSchema } from '../schemas';
 import { checkRateLimit, recordRateLimitAttempt } from '../utils/rate-limiter';
 import { logAuthEvent } from '../utils/audit';
 import { generateCode } from '../utils/crypto';
+import { hashVerificationCode, matchesVerificationCode } from '../utils/verification-code';
 import type { AuthResult } from '../types';
 import { mailService } from '@/lib/services/mail-service';
 
@@ -35,15 +36,23 @@ export async function sendRegistrationCode(email: string): Promise<AuthResult> {
     const code = generateCode(6);
     const expiresAt = new Date(Date.now() + 15 * 60 * 1000);
 
-    await serviceClient.from('verification_codes').insert({
+    const { error: insertError } = await serviceClient.from('verification_codes').insert({
       email: email.toLowerCase(),
-      code,
+      code_hash: hashVerificationCode(code, email),
       type: 'registration',
       expires_at: expiresAt.toISOString(),
       attempts: 0,
     });
 
-    const emailResult = await mailService.sendVerificationCode(email, code);
+    if (insertError) {
+      console.error('[sendRegistrationCode] Insert failed:', insertError);
+      return { success: false, error: 'Doğrulama kodu oluşturulamadı. Lütfen tekrar deneyin.' };
+    }
+
+    const emailResult = await mailService.sendVerificationCode(email, code, {
+      purpose: 'registration',
+      expiresInMinutes: 15,
+    });
     if (!emailResult.success) {
       return { success: false, error: 'Doğrulama kodu gönderilemedi. Lütfen tekrar deneyin.' };
     }
@@ -80,7 +89,7 @@ export async function verifyRegistrationCode(email: string, code: string): Promi
       return { success: false, error: 'Çok fazla yanlış deneme. Yeni kod talep edin.' };
     }
 
-    if (verification.code !== code) {
+    if (!matchesVerificationCode(code, email, verification.code_hash)) {
       await serviceClient.from('verification_codes')
         .update({ attempts: (verification.attempts || 0) + 1 })
         .eq('id', verification.id);

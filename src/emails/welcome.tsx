@@ -12,16 +12,19 @@ import {
   Section,
   Text,
   Link,
+  Preview,
 } from '@react-email/components';
 
 interface WelcomeEmailProps {
   userName: string;
+  dashboardUrl: string;
 }
 
-export default function WelcomeEmail({ userName }: WelcomeEmailProps) {
+export default function WelcomeEmail({ userName, dashboardUrl }: WelcomeEmailProps) {
   return (
     <Html>
       <Head />
+      <Preview>AXIS3&apos;e hoş geldiniz — hesabınız hazır</Preview>
       <Body style={main}>
         <Container style={container}>
           {/* Header */}
@@ -77,7 +80,7 @@ export default function WelcomeEmail({ userName }: WelcomeEmailProps) {
                         <Text style={featureLabel}>Teknik Destek</Text>
                       </td>
                       <td style={featureValueCell}>
-                        <Text style={featureValue}>7/24 uzman desteği</Text>
+                        <Text style={featureValue}>Uzman teknik destek</Text>
                       </td>
                     </tr>
                   </tbody>
@@ -140,7 +143,7 @@ export default function WelcomeEmail({ userName }: WelcomeEmailProps) {
 
             {/* CTA */}
             <Section style={ctaSection}>
-              <Link href="https://axis3.com.tr/dashboard" style={ctaButton}>
+              <Link href={dashboardUrl} style={ctaButton}>
                 PLATFORMU KEŞFET
               </Link>
             </Section>

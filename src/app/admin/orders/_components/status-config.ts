@@ -47,18 +47,6 @@ export const statusConfig: Record<OrderStatus, StatusConfig> = {
     dotColor: 'bg-indigo-500',
     icon: Eye,
   },
-  washing: {
-    label: 'Yıkamada',
-    color: 'text-sky-600 dark:text-sky-400 bg-sky-500/10 border-sky-500/20',
-    dotColor: 'bg-sky-500',
-    icon: Clock,
-  },
-  curing: {
-    label: 'Kürlemede',
-    color: 'text-amber-600 dark:text-amber-400 bg-amber-500/10 border-amber-500/20',
-    dotColor: 'bg-amber-500',
-    icon: Clock,
-  },
   packaging: {
     label: 'Paketleniyor',
     color: 'text-violet-600 dark:text-violet-400 bg-violet-500/10 border-violet-500/20',
@@ -97,8 +85,6 @@ export const statusFlow: OrderStatus[] = [
   'preparing',
   'printing',
   'quality_check',
-  'washing',
-  'curing',
   'packaging',
   'shipped',
   'delivered',

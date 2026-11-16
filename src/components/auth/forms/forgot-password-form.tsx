@@ -12,7 +12,7 @@ import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Loader2, Mail, ArrowLeft, CheckCircle2 } from 'lucide-react';
+import { Loader2, Mail, ArrowLeft, CheckCircle2, Clock } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 type ForgotPasswordFormValues = z.infer<typeof forgotPasswordSchema>;
@@ -20,6 +20,7 @@ type ForgotPasswordFormValues = z.infer<typeof forgotPasswordSchema>;
 export function ForgotPasswordForm() {
   const [isPending, startTransition] = useTransition();
   const [sent, setSent] = useState(false);
+  const [sentTo, setSentTo] = useState('');
 
   const form = useForm<ForgotPasswordFormValues>({
     resolver: zodResolver(forgotPasswordSchema),
@@ -32,6 +33,7 @@ export function ForgotPasswordForm() {
     startTransition(async () => {
       const result = await requestPasswordReset(values.email);
       if (result.success) {
+        setSentTo(values.email.trim());
         setSent(true);
         toast.success(result.message || 'E-posta gönderildi');
       } else {
@@ -53,16 +55,38 @@ export function ForgotPasswordForm() {
         <div className="space-y-2">
           <h3 className="text-lg font-semibold">E-posta Gönderildi</h3>
           <p className="text-sm text-muted-foreground">
-            Şifre sıfırlama bağlantısı e-posta adresinize gönderildi.
-            Lütfen gelen kutunuzu kontrol edin.
+            Şifre sıfırlama bağlantısı
+            {sentTo && (
+              <>
+                {' '}
+                <span className="font-medium text-foreground">{sentTo}</span>{' '}
+              </>
+            )}
+            adresine gönderildi. Lütfen gelen kutunuzu ve spam klasörünüzü kontrol edin.
           </p>
         </div>
-        <Button variant="outline" asChild className="mt-4">
-          <Link href="/login">
-            <ArrowLeft className="mr-2 h-4 w-4" />
-            Giriş Sayfasına Dön
-          </Link>
-        </Button>
+
+        <div className="mx-auto max-w-sm rounded-xl border border-border/60 bg-muted/30 px-4 py-3 text-left">
+          <div className="flex items-center gap-2 text-xs font-medium">
+            <Clock className="h-3.5 w-3.5 text-primary" />
+            Bağlantı 1 saat geçerlidir
+          </div>
+          <p className="mt-1 pl-5 text-xs text-muted-foreground">
+            Güvenliğiniz için bağlantı yalnızca bir kez kullanılabilir.
+          </p>
+        </div>
+
+        <div className="flex flex-col gap-2 sm:flex-row sm:justify-center">
+          <Button variant="outline" onClick={() => setSent(false)}>
+            Farklı e-posta dene
+          </Button>
+          <Button asChild>
+            <Link href="/login">
+              <ArrowLeft className="mr-2 h-4 w-4" />
+              Giriş Sayfasına Dön
+            </Link>
+          </Button>
+        </div>
       </motion.div>
     );
   }
@@ -74,10 +98,16 @@ export function ForgotPasswordForm() {
       transition={{ duration: 0.3 }}
     >
       <form onSubmit={handleSubmit(onSubmit)} className="space-y-5" noValidate>
-        <div className="text-center space-y-2 mb-6">
+        <div className="flex items-center justify-center">
+          <div className="w-14 h-14 rounded-full bg-primary/10 flex items-center justify-center">
+            <Mail className="w-7 h-7 text-primary" />
+          </div>
+        </div>
+
+        <div className="text-center space-y-2">
+          <h3 className="text-lg font-semibold">Şifrenizi mi unuttunuz?</h3>
           <p className="text-sm text-muted-foreground">
-            Şifrenizi sıfırlamak için kayıtlı e-posta adresinizi girin.
-            Size bir sıfırlama bağlantısı göndereceğiz.
+            Kayıtlı e-posta adresinizi girin; size tek kullanımlık bir sıfırlama bağlantısı gönderelim.
           </p>
         </div>
 

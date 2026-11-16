@@ -12,11 +12,13 @@ import {
   Section,
   Text,
   Link,
+  Preview,
 } from '@react-email/components';
 
 interface OrderStatusUpdateProps {
   order: {
     orderNumber: string;
+    orderId: string;
     oldStatus: string;
     newStatus: string;
     totalPrice: number;
@@ -27,6 +29,7 @@ interface OrderStatusUpdateProps {
       fileName: string;
       quantity: number;
     }>;
+    dashboardUrl: string;
   };
 }
 
@@ -39,26 +42,29 @@ const CARGO_COMPANY_INFO: Record<string, { name: string; logoUrl: string; tracki
 };
 
 const statusLabels: { [key: string]: string } = {
-  pending: 'Beklemede',
-  processing: 'İşleniyor',
-  in_production: 'Üretimde',
-  ready_for_shipment: 'Kargoya Hazır',
+  pending: 'Ödeme Bekleniyor',
+  payment_received: 'Ödeme Onaylandı',
+  preparing: 'Hazırlanıyor',
+  printing: 'Baskıda',
+  quality_check: 'Kalite Kontrol',
+  packaging: 'Paketleniyor',
   shipped: 'Kargoda',
   delivered: 'Teslim Edildi',
-  completed: 'Tamamlandı',
   cancelled: 'İptal Edildi',
+  refunded: 'İade Edildi',
 };
 
 export default function OrderStatusUpdate({ order }: OrderStatusUpdateProps) {
   const formattedTotal = new Intl.NumberFormat('tr-TR', { style: 'currency', currency: 'TRY' }).format(order.totalPrice);
   const currentStatusLabel = statusLabels[order.newStatus] || order.newStatus;
-  const isCompleted = order.newStatus === 'completed' || order.newStatus === 'delivered';
+  const isCompleted = order.newStatus === 'delivered';
   const isCancelled = order.newStatus === 'cancelled';
-  const isShipped = order.newStatus === 'shipped' || order.newStatus === 'ready_for_shipment';
+  const isShipped = order.newStatus === 'shipped' || order.newStatus === 'delivered';
 
   return (
     <Html>
       <Head />
+      <Preview>Sipariş durumu güncellendi — {order.orderNumber}</Preview>
       <Body style={main}>
         <Container style={container}>
           {/* Header */}
@@ -229,35 +235,44 @@ export default function OrderStatusUpdate({ order }: OrderStatusUpdateProps) {
                       </td>
                     </tr>
                     <tr>
-                      <td style={getStepStyle(order.newStatus, 'processing')}>
+                      <td style={getStepStyle(order.newStatus, 'payment_received')}>
                         <Text style={stepNumber}>02</Text>
                       </td>
                       <td style={stepContentCell}>
-                        <Text style={getStepTitleStyle(order.newStatus, 'processing')}>Hazırlanıyor</Text>
-                        <Text style={stepDesc}>Dosyalar kontrol ediliyor</Text>
+                        <Text style={getStepTitleStyle(order.newStatus, 'payment_received')}>Ödeme Onaylandı</Text>
+                        <Text style={stepDesc}>Ödemeniz doğrulandı</Text>
                       </td>
                     </tr>
                     <tr>
-                      <td style={getStepStyle(order.newStatus, 'in_production')}>
+                      <td style={getStepStyle(order.newStatus, 'preparing')}>
                         <Text style={stepNumber}>03</Text>
                       </td>
                       <td style={stepContentCell}>
-                        <Text style={getStepTitleStyle(order.newStatus, 'in_production')}>Üretimde</Text>
-                        <Text style={stepDesc}>3D baskı devam ediyor</Text>
+                        <Text style={getStepTitleStyle(order.newStatus, 'preparing')}>Hazırlanıyor</Text>
+                        <Text style={stepDesc}>Dosyalarınız kontrol ediliyor</Text>
                       </td>
                     </tr>
                     <tr>
-                      <td style={getStepStyle(order.newStatus, 'ready_for_shipment')}>
+                      <td style={getStepStyle(order.newStatus, 'printing')}>
                         <Text style={stepNumber}>04</Text>
                       </td>
                       <td style={stepContentCell}>
-                        <Text style={getStepTitleStyle(order.newStatus, 'ready_for_shipment')}>Kargoya Hazır</Text>
-                        <Text style={stepDesc}>Kalite kontrol tamamlandı</Text>
+                        <Text style={getStepTitleStyle(order.newStatus, 'printing')}>Baskı ve Kalite Kontrol</Text>
+                        <Text style={stepDesc}>Parçalarınız üretiliyor ve kontrol ediliyor</Text>
+                      </td>
+                    </tr>
+                    <tr>
+                      <td style={getStepStyle(order.newStatus, 'packaging')}>
+                        <Text style={stepNumber}>05</Text>
+                      </td>
+                      <td style={stepContentCell}>
+                        <Text style={getStepTitleStyle(order.newStatus, 'packaging')}>Paketleniyor</Text>
+                        <Text style={stepDesc}>Siparişiniz kargoya hazırlanıyor</Text>
                       </td>
                     </tr>
                     <tr>
                       <td style={getStepStyle(order.newStatus, 'shipped')}>
-                        <Text style={stepNumber}>05</Text>
+                        <Text style={stepNumber}>06</Text>
                       </td>
                       <td style={stepContentCell}>
                         <Text style={getStepTitleStyle(order.newStatus, 'shipped')}>Kargoda</Text>
@@ -266,7 +281,7 @@ export default function OrderStatusUpdate({ order }: OrderStatusUpdateProps) {
                     </tr>
                     <tr>
                       <td style={getStepStyle(order.newStatus, 'delivered')}>
-                        <Text style={stepNumber}>06</Text>
+                        <Text style={stepNumber}>07</Text>
                       </td>
                       <td style={stepContentCell}>
                         <Text style={getStepTitleStyle(order.newStatus, 'delivered')}>Teslim Edildi</Text>
@@ -280,7 +295,7 @@ export default function OrderStatusUpdate({ order }: OrderStatusUpdateProps) {
 
             {/* CTA */}
             <Section style={ctaSection}>
-              <Link href={`https://axis3.com.tr/dashboard/orders/${order.orderNumber}`} style={ctaButton}>
+              <Link href={order.dashboardUrl} style={ctaButton}>
                 SİPARİŞ DETAYLARI
               </Link>
             </Section>
@@ -324,12 +339,13 @@ export default function OrderStatusUpdate({ order }: OrderStatusUpdateProps) {
 function getStatusOrder(status: string): number {
   const order: { [key: string]: number } = {
     pending: 1,
-    processing: 2,
-    in_production: 3,
-    ready_for_shipment: 4,
-    shipped: 5,
-    delivered: 6,
-    completed: 6,
+    payment_received: 2,
+    preparing: 3,
+    printing: 4,
+    quality_check: 4,
+    packaging: 5,
+    shipped: 6,
+    delivered: 7,
   };
   return order[status] || 0;
 }

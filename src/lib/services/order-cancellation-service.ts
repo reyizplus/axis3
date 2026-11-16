@@ -15,6 +15,7 @@
 import { createServiceClient } from '@/lib/supabase/server';
 import { isMissingColumnError, isMissingFunctionError } from '@/lib/supabase/errors';
 import { releaseCoupon } from '@/lib/services/coupon-service';
+import { notifyOrderStatusChange } from '@/lib/services/order-notification-service';
 
 export async function releaseOrderStock(orderId: string): Promise<boolean> {
   const supabase = createServiceClient();
@@ -159,6 +160,11 @@ export async function cancelOrder(
     patch.payment_error = reason;
   }
 
+  const { data: previous } = await (supabase.from('orders') as any)
+    .select('status')
+    .eq('id', orderId)
+    .maybeSingle();
+
   const { error } = await (supabase.from('orders') as any)
     .update(patch)
     .eq('id', orderId);
@@ -166,5 +172,15 @@ export async function cancelOrder(
   if (error) {
     console.error('[OrderCancellation] Order cancel failed:', error);
     throw new Error(`Sipariş iptal edilemedi: ${error.message}`);
+  }
+
+  // Tell the customer their order was cancelled. Best effort: a mail problem
+  // must never undo or block the cancellation itself.
+  if (previous?.status && previous.status !== 'cancelled') {
+    try {
+      await notifyOrderStatusChange(orderId, previous.status, 'cancelled');
+    } catch (notifyError) {
+      console.error('[OrderCancellation] Cancellation email failed:', notifyError);
+    }
   }
 }

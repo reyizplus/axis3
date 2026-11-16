@@ -40,6 +40,18 @@ export async function requestPasswordReset(email: string): Promise<AuthResult> {
     const urlToken = generateToken(16);
     const expiresAt = new Date(Date.now() + 60 * 60 * 1000);
 
+    // Reset links are single-use: issuing a new link must invalidate every
+    // previously issued, still-unused token for this account.
+    const { error: invalidateError } = await serviceClient
+      .from('password_reset_tokens')
+      .update({ used_at: new Date().toISOString() })
+      .eq('user_id', user.id)
+      .is('used_at', null);
+
+    if (invalidateError) {
+      console.error('[requestPasswordReset] Could not invalidate old tokens:', invalidateError);
+    }
+
     await serviceClient.from('password_reset_tokens').insert({
       user_id: user.id,
       token,
@@ -76,13 +88,15 @@ export async function requestPasswordReset(email: string): Promise<AuthResult> {
   }
 }
 
-export async function validateResetToken(ref: string): Promise<{ valid: boolean }> {
+export async function validateResetToken(
+  ref: string
+): Promise<{ valid: boolean; email?: string }> {
   try {
     const serviceClient = createServiceClient();
 
     const { data: tokenRecord } = await serviceClient
       .from('password_reset_tokens')
-      .select('id, expires_at, used_at')
+      .select('id, user_id, expires_at, used_at')
       .or(`token.eq.${ref},url_token.eq.${ref}`)
       .maybeSingle();
 
@@ -90,7 +104,16 @@ export async function validateResetToken(ref: string): Promise<{ valid: boolean 
       return { valid: false };
     }
 
-    return { valid: true };
+    // The reset page shows which account is being reset. The holder of this
+    // single-use link already controls the mailbox, so returning the address
+    // does not leak anything new.
+    const { data: account } = await serviceClient
+      .from('users')
+      .select('email')
+      .eq('id', tokenRecord.user_id)
+      .maybeSingle();
+
+    return { valid: true, email: account?.email ?? undefined };
   } catch (error) {
     console.error('[validateResetToken] Error:', error);
     return { valid: false };

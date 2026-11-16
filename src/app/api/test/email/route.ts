@@ -34,27 +34,36 @@ export async function POST(request: Request) {
       case 'order-confirmation':
         // Mock order data
         const mockOrder = {
-          id: 'test-order-123',
+          id: '3f1c2a9e-0000-4000-8000-000000000001',
           order_number: 'ORD-TEST-001',
           user_id: 'test-user',
           user_email: email,
           user_name: 'Test User',
-          total_price: 150.00,
-          status: 'pending_payment',
+          total_amount: 150.00,
+          status: 'pending',
           payment_method: 'eft_havale',
-          estimated_delivery: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+          shipping_address: {
+            fullName: 'Test User',
+            phone: '+90 501 045 27 78',
+            city: 'İstanbul',
+            district: 'Kadıköy',
+            neighborhood: 'Caferağa',
+            street: 'Moda Caddesi',
+            buildingNo: '12',
+            apartmentNo: '3',
+            zipCode: '34710',
+            notes: '',
+          },
+          estimated_delivery: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10),
           created_at: new Date().toISOString(),
           items: [
             {
               id: 'item-1',
-              file_name: 'test-model.stl',
+              filename: 'test-model.stl',
               material_name: 'PLA',
-              color: 'Beyaz',
-              quality_name: 'Standart',
               quantity: 2,
               unit_price: 75.00,
               subtotal: 150.00,
-              dimensions: { x: 10, y: 10, z: 5 }
             }
           ]
         };
@@ -64,20 +73,21 @@ export async function POST(request: Request) {
       case 'order-status':
         // Mock order data for status update
         const mockStatusOrder = {
-          id: 'test-order-456',
+          id: '3f1c2a9e-0000-4000-8000-000000000002',
           order_number: 'ORD-TEST-002',
           user_email: email,
           user_name: 'Test User',
-          status: 'in_production',
+          status: 'preparing',
+          total_amount: 150.00,
           items: [
             {
-              file_name: 'test-model.stl',
+              filename: 'test-model.stl',
               material_name: 'PLA',
               quantity: 1
             }
           ]
         };
-        result = await mailService.sendOrderStatusUpdate(mockStatusOrder, 'pending_payment');
+        result = await mailService.sendOrderStatusUpdate(mockStatusOrder, 'payment_received');
         break;
 
       case 'password-reset':

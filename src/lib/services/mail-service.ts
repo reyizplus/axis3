@@ -1,18 +1,51 @@
 /**
  * Mail Service - Email Notification System
  * Axis3 - Resend Integration with React Email Templates
- * 
- * Purpose: Send transactional emails using Resend and React Email templates
+ *
+ * Every public send method funnels through `deliver()`, which
+ *   - refuses to send without a recipient,
+ *   - sends both HTML and a plain-text alternative,
+ *   - records the attempt in `email_logs`.
  */
 
 import { resend as resendClient, EMAIL_CONFIG } from '@/lib/email/client';
 import { EmailResult } from '@/lib/email/types';
-import { prepareOrderEmailData, prepareOrderStatusEmailData } from '@/lib/email/templates';
+import { getAppUrl, prepareOrderEmailData, prepareOrderStatusEmailData } from '@/lib/email/templates';
 import { render } from '@react-email/components';
 import OrderConfirmation from '@/emails/order-confirmation';
 import OrderStatusUpdate from '@/emails/order-status-update';
 import WelcomeEmail from '@/emails/welcome';
 import PasswordResetEmail from '@/emails/password-reset';
+import EmailVerification from '@/emails/email-verification';
+import ContactNotification from '@/emails/contact-notification';
+import { logEmail } from '@/lib/services/email-log-service';
+import type { Json } from '@/types/database';
+
+export type VerificationPurpose = 'registration' | '2fa' | 'email_verification';
+
+export interface VerificationCodeOptions {
+  userName?: string;
+  purpose?: VerificationPurpose;
+  /** Displayed in the template; keep it in sync with the stored expiry. */
+  expiresInMinutes?: number;
+}
+
+interface DeliverInput {
+  to: string;
+  subject: string;
+  html: string;
+  text: string;
+  emailType: string;
+  replyTo?: string;
+  userId?: string | null;
+  metadata?: Json;
+}
+
+const VERIFICATION_SUBJECTS: Record<VerificationPurpose, string> = {
+  registration: 'E-posta Doğrulama Kodu - AXIS3',
+  '2fa': 'Giriş Doğrulama Kodu - AXIS3',
+  email_verification: 'E-posta Doğrulama Kodu - AXIS3',
+};
 
 // =====================================================
 // MAIL SERVICE CLASS
@@ -21,11 +54,6 @@ import PasswordResetEmail from '@/emails/password-reset';
 class MailService {
   private warnedNotConfigured = false;
 
-  /**
-   * Log (once) and report that email delivery is disabled because the Resend
-   * client was not created. Previously this returned silently and callers kept
-   * assuming the email had been sent.
-   */
   private notConfigured(context: string): EmailResult {
     if (!this.warnedNotConfigured) {
       this.warnedNotConfigured = true;
@@ -38,37 +66,114 @@ class MailService {
     return { success: false, error: 'Email service not configured' };
   }
 
+  /** Render a React Email template to HTML + plain text. */
+  private async renderTemplate(node: React.ReactElement): Promise<{ html: string; text: string }> {
+    const [html, text] = await Promise.all([
+      render(node),
+      render(node, { plainText: true }),
+    ]);
+
+    return { html, text };
+  }
+
+  private async deliver(input: DeliverInput): Promise<EmailResult> {
+    const to = (input.to || '').trim();
+
+    if (!to) {
+      console.warn(`[MailService] ${input.emailType} skipped: recipient address is empty`);
+      await logEmail({
+        userId: input.userId,
+        recipient: '',
+        emailType: input.emailType,
+        subject: input.subject,
+        status: 'skipped',
+        error: 'Alıcı e-posta adresi yok',
+        metadata: input.metadata,
+      });
+      return { success: false, error: 'Alıcı e-posta adresi yok' };
+    }
+
+    if (!resendClient) {
+      await logEmail({
+        userId: input.userId,
+        recipient: to,
+        emailType: input.emailType,
+        subject: input.subject,
+        status: 'skipped',
+        error: 'Email service not configured',
+        metadata: input.metadata,
+      });
+      return this.notConfigured(input.emailType);
+    }
+
+    try {
+      const { data, error } = await resendClient.emails.send({
+        from: EMAIL_CONFIG.from,
+        to,
+        subject: input.subject,
+        html: input.html,
+        text: input.text,
+        replyTo: input.replyTo || EMAIL_CONFIG.replyTo,
+      });
+
+      if (error) {
+        console.error(`[MailService] ${input.emailType} failed:`, error);
+        await logEmail({
+          userId: input.userId,
+          recipient: to,
+          emailType: input.emailType,
+          subject: input.subject,
+          status: 'failed',
+          error: error.message,
+          metadata: input.metadata,
+        });
+        return { success: false, error: error.message };
+      }
+
+      await logEmail({
+        userId: input.userId,
+        recipient: to,
+        emailType: input.emailType,
+        subject: input.subject,
+        status: 'sent',
+        providerId: data?.id,
+        metadata: input.metadata,
+      });
+
+      return { success: true, messageId: data?.id };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Email send failed';
+      console.error(`[MailService] ${input.emailType} error:`, error);
+      await logEmail({
+        userId: input.userId,
+        recipient: to,
+        emailType: input.emailType,
+        subject: input.subject,
+        status: 'failed',
+        error: message,
+        metadata: input.metadata,
+      });
+      return { success: false, error: message };
+    }
+  }
+
   /**
    * Send order confirmation email
    */
   async sendOrderConfirmation(order: any): Promise<EmailResult> {
     try {
-      if (!resendClient) {
-        return this.notConfigured('Order confirmation email');
-      }
-
       const emailData = prepareOrderEmailData(order);
-      const emailHtml = await render(OrderConfirmation({ order: emailData }));
-      const { data, error } = await resendClient.emails.send({
-        from: EMAIL_CONFIG.from,
+      const { html, text } = await this.renderTemplate(OrderConfirmation({ order: emailData }));
+
+      return await this.deliver({
         to: emailData.userEmail,
         subject: `Siparişiniz Alındı - ${emailData.orderNumber}`,
-        html: emailHtml,
-        replyTo: EMAIL_CONFIG.replyTo,
+        html,
+        text,
+        emailType: 'order_confirmation',
+        userId: order?.user_id ?? null,
+        metadata: { orderNumber: emailData.orderNumber, orderId: order?.id },
       });
-
-      if (error) {
-        console.error('[MailService] Order confirmation email failed:', error);
-        return {
-          success: false,
-          error: error.message,
-        };
-      }
-
-            return {
-        success: true,
-        messageId: data?.id,
-      };
     } catch (error) {
       console.error('[MailService] Order confirmation email error:', error);
       return {
@@ -81,34 +186,28 @@ class MailService {
   /**
    * Send order status update email
    */
-  async sendOrderStatusUpdate(order: any, oldStatus: string): Promise<EmailResult> {
+  async sendOrderStatusUpdate(
+    order: any,
+    oldStatus: string,
+    options: { includeTracking?: boolean } = {}
+  ): Promise<EmailResult> {
     try {
-      if (!resendClient) {
-        return this.notConfigured('Order status email');
-      }
+      const emailData = prepareOrderStatusEmailData(order, oldStatus, options);
+      const { html, text } = await this.renderTemplate(OrderStatusUpdate({ order: emailData }));
 
-      const emailData = prepareOrderStatusEmailData(order, oldStatus);
-      const emailHtml = await render(OrderStatusUpdate({ order: emailData }));
-      const { data, error } = await resendClient.emails.send({
-        from: EMAIL_CONFIG.from,
+      return await this.deliver({
         to: emailData.userEmail,
         subject: `Sipariş Durumu Güncellendi - ${emailData.orderNumber}`,
-        html: emailHtml,
-        replyTo: EMAIL_CONFIG.replyTo,
+        html,
+        text,
+        emailType: 'order_status_update',
+        userId: order?.user_id ?? null,
+        metadata: {
+          orderNumber: emailData.orderNumber,
+          orderId: order?.id,
+          newStatus: emailData.newStatus,
+        },
       });
-
-      if (error) {
-        console.error('[MailService] Status update email failed:', error);
-        return {
-          success: false,
-          error: error.message,
-        };
-      }
-
-            return {
-        success: true,
-        messageId: data?.id,
-      };
     } catch (error) {
       console.error('[MailService] Status update email error:', error);
       return {
@@ -119,29 +218,26 @@ class MailService {
   }
 
   /**
-   * Send welcome email (optional - for future use)
+   * Send welcome email
    */
-  async sendWelcomeEmail(userEmail: string, userName: string): Promise<EmailResult> {
+  async sendWelcomeEmail(
+    userEmail: string,
+    userName: string,
+    userId?: string
+  ): Promise<EmailResult> {
     try {
-      if (!resendClient) {
-        return this.notConfigured('Welcome email');
-      }
+      const { html, text } = await this.renderTemplate(
+        WelcomeEmail({ userName, dashboardUrl: `${getAppUrl()}/dashboard` })
+      );
 
-      const emailHtml = await render(WelcomeEmail({ userName }));
-      const { data, error } = await resendClient.emails.send({
-        from: EMAIL_CONFIG.from,
+      return await this.deliver({
         to: userEmail,
         subject: 'AXIS3 - Hoş Geldiniz',
-        html: emailHtml,
-        replyTo: EMAIL_CONFIG.replyTo,
+        html,
+        text,
+        emailType: 'welcome',
+        userId: userId ?? null,
       });
-
-      if (error) {
-        console.error('[MailService] Welcome email failed:', error);
-        return { success: false, error: error.message };
-      }
-
-            return { success: true, messageId: data?.id };
     } catch (error) {
       console.error('[MailService] Welcome email error:', error);
       return {
@@ -152,29 +248,21 @@ class MailService {
   }
 
   /**
-   * Send password reset email (optional - for future use)
+   * Send password reset email
    */
   async sendPasswordResetEmail(userEmail: string, resetUrl: string): Promise<EmailResult> {
     try {
-      if (!resendClient) {
-        return this.notConfigured('Password reset email');
-      }
+      const { html, text } = await this.renderTemplate(
+        PasswordResetEmail({ resetUrl, userEmail })
+      );
 
-      const emailHtml = await render(PasswordResetEmail({ resetUrl, userEmail }));
-      const { data, error } = await resendClient.emails.send({
-        from: EMAIL_CONFIG.from,
+      return await this.deliver({
         to: userEmail,
         subject: 'AXIS3 - Şifre Sıfırlama Talebi',
-        html: emailHtml,
-        replyTo: EMAIL_CONFIG.replyTo,
+        html,
+        text,
+        emailType: 'password_reset',
       });
-
-      if (error) {
-        console.error('[MailService] Password reset email failed:', error);
-        return { success: false, error: error.message };
-      }
-
-            return { success: true, messageId: data?.id };
     } catch (error) {
       console.error('[MailService] Password reset email error:', error);
       return {
@@ -187,9 +275,7 @@ class MailService {
   /**
    * Notify the shop owner about a new contact form message.
    *
-   * The message is already stored in `feedback`; this is only the alert. It is
-   * deliberately independent from the store (no template) so it keeps working
-   * even if the feedback table exists but nobody watches it.
+   * The message is already stored in `feedback`; this is only the alert.
    */
   async sendContactNotification(input: {
     name: string;
@@ -197,48 +283,37 @@ class MailService {
     phone: string;
     message: string;
     pageUrl?: string;
+    subject?: string;
+    submittedAt?: string;
   }): Promise<EmailResult> {
     try {
-      if (!resendClient) {
-        return this.notConfigured('Contact form notification');
-      }
-
       const to = (process.env.ADMIN_NOTIFICATION_EMAIL || EMAIL_CONFIG.replyTo).trim();
       if (!to) {
         return { success: false, error: 'ADMIN_NOTIFICATION_EMAIL is not configured' };
       }
 
-      const escape = (value: string) =>
-        value
-          .replace(/&/g, '&amp;')
-          .replace(/</g, '&lt;')
-          .replace(/>/g, '&gt;')
-          .replace(/"/g, '&quot;');
+      const { html, text } = await this.renderTemplate(
+        ContactNotification({
+          name: input.name,
+          email: input.email,
+          phone: input.phone,
+          subject: input.subject || 'İletişim Formu',
+          message: input.message,
+          submittedAt: input.submittedAt || new Date().toLocaleString('tr-TR'),
+          pageUrl: input.pageUrl,
+          appUrl: getAppUrl(),
+        })
+      );
 
-      const html = `
-        <h2>Yeni İletişim Formu Mesajı</h2>
-        <p><strong>Ad:</strong> ${escape(input.name)}</p>
-        <p><strong>E-posta:</strong> ${escape(input.email)}</p>
-        <p><strong>Telefon:</strong> ${escape(input.phone)}</p>
-        ${input.pageUrl ? `<p><strong>Sayfa:</strong> ${escape(input.pageUrl)}</p>` : ''}
-        <hr />
-        <p style="white-space:pre-wrap">${escape(input.message)}</p>
-      `;
-
-      const { data, error } = await resendClient.emails.send({
-        from: EMAIL_CONFIG.from,
+      return await this.deliver({
         to,
-        replyTo: input.email,
         subject: `İletişim Formu: ${input.name}`,
         html,
+        text,
+        emailType: 'contact_notification',
+        replyTo: input.email,
+        metadata: { senderEmail: input.email, pageUrl: input.pageUrl },
       });
-
-      if (error) {
-        console.error('[MailService] Contact notification failed:', error);
-        return { success: false, error: error.message };
-      }
-
-      return { success: true, messageId: data?.id };
     } catch (error) {
       console.error('[MailService] Contact notification error:', error);
       return {
@@ -249,35 +324,34 @@ class MailService {
   }
 
   /**
-   * Send Email Verification Code
+   * Send an e-mailed verification code (registration, 2FA, e-mail verification).
    */
   async sendVerificationCode(
     email: string,
     code: string,
-    userName?: string
+    options: VerificationCodeOptions = {}
   ): Promise<EmailResult> {
-    if (!resendClient) {
-      return this.notConfigured('Verification code email');
-    }
+    const purpose = options.purpose || 'registration';
+    const expiresInMinutes = options.expiresInMinutes ?? 15;
 
     try {
-      const EmailVerification = (await import('@/emails/email-verification')).default;
-      const { data, error } = await resendClient.emails.send({
-        from: EMAIL_CONFIG.from,
-        to: email,
-        subject: 'Email Doğrulama - AXIS3',
-        react: EmailVerification({
+      const { html, text } = await this.renderTemplate(
+        EmailVerification({
           code,
-          userName: userName || 'Kullanıcı',
-        }),
+          userName: options.userName || 'Kullanıcı',
+          purpose,
+          expiresInMinutes,
+        })
+      );
+
+      return await this.deliver({
+        to: email,
+        subject: VERIFICATION_SUBJECTS[purpose],
+        html,
+        text,
+        emailType: `verification_${purpose}`,
+        metadata: { purpose, expiresInMinutes },
       });
-
-      if (error) {
-        console.error('[MailService] Verification code email failed:', error);
-        return { success: false, error: error.message };
-      }
-
-            return { success: true, messageId: data?.id };
     } catch (error) {
       console.error('[MailService] Verification code email error:', error);
       return {

@@ -11,20 +11,44 @@ import {
   Container,
   Section,
   Text,
+  Preview,
 } from '@react-email/components';
+
+type VerificationPurpose = 'registration' | '2fa' | 'email_verification';
 
 interface EmailVerificationProps {
   code: string;
   userName: string;
+  purpose?: VerificationPurpose;
+  expiresInMinutes?: number;
 }
 
 export default function EmailVerification({
   code = '123456',
   userName = 'Kullanıcı',
+  purpose = 'registration',
+  expiresInMinutes = 15,
 }: EmailVerificationProps) {
+  const isLogin = purpose === '2fa';
+
+  const heading = isLogin ? 'Giriş Doğrulama' : 'E-posta Doğrulama';
+
+  const intro = isLogin
+    ? 'AXIS3 hesabınıza giriş yapmak için aşağıdaki doğrulama kodunu kullanmanız gerekmektedir.'
+    : purpose === 'email_verification'
+      ? 'AXIS3 hesabınızın e-posta adresini doğrulamak için aşağıdaki kodu kullanmanız gerekmektedir.'
+      : 'AXIS3 platformuna kaydınızı tamamlamak için aşağıdaki doğrulama kodunu kullanmanız gerekmektedir.';
+
+  const stepTarget = isLogin
+    ? 'Giriş doğrulama ekranındaki alana gidin'
+    : purpose === 'email_verification'
+      ? 'E-posta doğrulama sayfasındaki alana gidin'
+      : 'Kayıt sayfasındaki doğrulama alanına gidin';
+
   return (
     <Html>
       <Head />
+      <Preview>{`AXIS3 doğrulama kodunuz: ${code}`}</Preview>
       <Body style={main}>
         <Container style={container}>
           {/* Header */}
@@ -35,14 +59,14 @@ export default function EmailVerification({
 
           {/* Content */}
           <Section style={content}>
-            <Text style={title}>Email Doğrulama</Text>
+            <Text style={title}>{heading}</Text>
             
             <Text style={greeting}>
               Sayın {userName},
             </Text>
 
             <Text style={paragraph}>
-              AXIS3 platformuna kaydınızı tamamlamak için aşağıdaki doğrulama kodunu kullanmanız gerekmektedir.
+              {intro}
             </Text>
 
             {/* Verification Code */}
@@ -52,7 +76,7 @@ export default function EmailVerification({
                 <Text style={codeText}>{code}</Text>
               </Section>
               <Text style={codeNote}>
-                Bu kod 10 dakika süreyle geçerlidir.
+                Bu kod {expiresInMinutes} dakika süreyle geçerlidir.
               </Text>
             </Section>
 
@@ -67,7 +91,7 @@ export default function EmailVerification({
                         <Text style={infoLabel}>Geçerlilik Süresi</Text>
                       </td>
                       <td style={infoValueCell}>
-                        <Text style={infoValue}>10 dakika</Text>
+                        <Text style={infoValue}>{expiresInMinutes} dakika</Text>
                       </td>
                     </tr>
                     <tr>
@@ -101,7 +125,9 @@ export default function EmailVerification({
                       <Text style={stepNumber}>01</Text>
                     </td>
                     <td style={stepContentCell}>
-                      <Text style={stepText}>Kayıt sayfasındaki doğrulama alanına gidin</Text>
+                      <Text style={stepText}>
+                        {stepTarget}
+                      </Text>
                     </td>
                   </tr>
                   <tr>

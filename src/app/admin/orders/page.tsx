@@ -153,12 +153,18 @@ export default function AdminOrdersPage() {
 
   const confirmPayment = async (orderId: string) => {
     try {
-      const supabase = createClient();
-      const { error } = await (supabase.from('orders') as any)
-        .update({ payment_status: 'paid', status: 'payment_received', updated_at: new Date().toISOString() })
-        .eq('id', orderId);
-      if (error) throw error;
-      toast.success('Ödeme onaylandı');
+      const res = await fetch(`/api/admin/orders/${orderId}/confirm-payment`, {
+        method: 'POST',
+      });
+      const result = await res.json().catch(() => null);
+      if (!res.ok || !result?.success) {
+        throw new Error(result?.error || 'Ödeme onaylanamadı');
+      }
+      toast.success(
+        result.emailSent
+          ? 'Ödeme onaylandı, müşteriye e-posta gönderildi'
+          : 'Ödeme onaylandı'
+      );
       await loadOrders();
     } catch {
       toast.error('Ödeme onaylanamadı');

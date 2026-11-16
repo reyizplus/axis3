@@ -12,6 +12,7 @@ import {
   Section,
   Text,
   Link,
+  Preview,
 } from '@react-email/components';
 
 interface PasswordResetEmailProps {
@@ -23,6 +24,7 @@ export default function PasswordResetEmail({ resetUrl, userEmail }: PasswordRese
   return (
     <Html>
       <Head />
+      <Preview>AXIS3 şifre sıfırlama bağlantınız</Preview>
       <Body style={main}>
         <Container style={container}>
           {/* Header */}

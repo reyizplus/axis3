@@ -1,19 +1,22 @@
 'use client';
 
-import { useState, useTransition } from 'react';
+import { useEffect, useState, useTransition } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { motion, AnimatePresence } from 'framer-motion';
-import { verifyTOTPLogin, verifyRecoveryCode, verify2FACode } from '@/lib/auth/actions/two-factor';
+import {
+  verifyRecoveryCode,
+  verify2FACode,
+  resend2FACode,
+} from '@/lib/auth/actions/two-factor';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 import { Input } from '@/components/ui/input';
 import { OTPInput } from '@/components/auth/ui/otp-input';
 import { CountdownTimer } from '@/components/auth/ui/countdown-timer';
-import { Loader2, ShieldCheck, KeyRound, ArrowLeft, Smartphone, Mail } from 'lucide-react';
-import { cn } from '@/lib/utils';
+import { Loader2, ShieldCheck, KeyRound, ArrowLeft, Mail } from 'lucide-react';
 
-type TwoFactorMethod = 'totp' | 'email' | 'recovery';
+type TwoFactorMethod = 'email' | 'recovery';
 
 interface TwoFactorFormProps {
   email: string;
@@ -21,21 +24,32 @@ interface TwoFactorFormProps {
   onSuccess?: () => void;
 }
 
-export function TwoFactorForm({ email, method = 'totp', onSuccess }: TwoFactorFormProps) {
+export function TwoFactorForm({ email, method = 'email', onSuccess }: TwoFactorFormProps) {
   const router = useRouter();
   const searchParams = useSearchParams();
   const [isPending, startTransition] = useTransition();
   const [currentMethod, setCurrentMethod] = useState<TwoFactorMethod>(method);
   const [recoveryCode, setRecoveryCode] = useState('');
+  const [resending, setResending] = useState(false);
+  const [cooldown, setCooldown] = useState(0);
+  const [codeVersion, setCodeVersion] = useState(0);
+
+  // Resend cooldown: keeps the button disabled for a minute so the customer
+  // cannot burn through the mail quota by clicking repeatedly.
+  useEffect(() => {
+    if (cooldown <= 0) return;
+    const timer = setTimeout(() => setCooldown((value) => value - 1), 1000);
+    return () => clearTimeout(timer);
+  }, [cooldown]);
 
   function getSafeRedirect(defaultPath: string = '/dashboard'): string {
     const raw = searchParams.get('redirectTo');
     return raw && (raw.startsWith('/') && !raw.startsWith('//')) ? raw : defaultPath;
   }
 
-  const handleTOTPSubmit = (code: string) => {
+  const handleEmailCodeSubmit = (code: string) => {
     startTransition(async () => {
-      const result = await verifyTOTPLogin(email, code);
+      const result = await verify2FACode(email, code);
       if (result.success) {
         toast.success('Giriş başarılı');
         if (onSuccess) {
@@ -50,17 +64,18 @@ export function TwoFactorForm({ email, method = 'totp', onSuccess }: TwoFactorFo
     });
   };
 
-  const handleEmailCodeSubmit = (code: string) => {
+  const handleResend = () => {
+    if (resending || cooldown > 0) return;
+
+    setResending(true);
     startTransition(async () => {
-      const result = await verify2FACode(email, code);
+      const result = await resend2FACode(email);
+      setResending(false);
+
       if (result.success) {
-        toast.success('Giriş başarılı');
-        if (onSuccess) {
-          onSuccess();
-        } else {
-          router.push(getSafeRedirect());
-          router.refresh();
-        }
+        toast.success('Yeni doğrulama kodu e-posta adresinize gönderildi');
+        setCooldown(60);
+        setCodeVersion((version) => version + 1);
       } else {
         toast.error(result.error);
       }
@@ -106,23 +121,12 @@ export function TwoFactorForm({ email, method = 'totp', onSuccess }: TwoFactorFo
       <div className="text-center space-y-1">
         <h3 className="text-lg font-semibold">İki Adımlı Doğrulama</h3>
         <p className="text-sm text-muted-foreground">
-          {currentMethod === 'totp' && 'Google Authenticator uygulamasındaki kodu girin'}
           {currentMethod === 'email' && `E-posta adresinize gönderilen kodu girin`}
           {currentMethod === 'recovery' && 'Kurtarma kodlarınızdan birini girin'}
         </p>
       </div>
 
       <div className="flex items-center justify-center gap-2">
-        <Button
-          type="button"
-          variant={currentMethod === 'totp' ? 'default' : 'outline'}
-          size="sm"
-          onClick={() => setCurrentMethod('totp')}
-          className="gap-2"
-        >
-          <Smartphone className="h-4 w-4" />
-          TOTP
-        </Button>
         <Button
           type="button"
           variant={currentMethod === 'email' ? 'default' : 'outline'}
@@ -146,23 +150,6 @@ export function TwoFactorForm({ email, method = 'totp', onSuccess }: TwoFactorFo
       </div>
 
       <AnimatePresence mode="wait">
-        {currentMethod === 'totp' && (
-          <motion.div
-            key="totp"
-            initial={{ opacity: 0, x: -20 }}
-            animate={{ opacity: 1, x: 0 }}
-            exit={{ opacity: 0, x: 20 }}
-            className="space-y-4"
-          >
-            <OTPInput
-              length={6}
-              onComplete={handleTOTPSubmit}
-              disabled={isPending}
-              autoFocus
-            />
-          </motion.div>
-        )}
-
         {currentMethod === 'email' && (
           <motion.div
             key="email"
@@ -176,8 +163,37 @@ export function TwoFactorForm({ email, method = 'totp', onSuccess }: TwoFactorFo
               onComplete={handleEmailCodeSubmit}
               disabled={isPending}
               autoFocus
+              key={codeVersion}
             />
-            <CountdownTimer initialSeconds={300} onExpire={() => {}} showProgress />
+            <CountdownTimer
+              key={`timer-${codeVersion}`}
+              initialSeconds={300}
+              onExpire={() => {}}
+              showProgress
+            />
+            <div className="text-center space-y-2">
+              <p className="text-xs text-muted-foreground">
+                Kod gelmediyse e-posta adresinizi ve spam klasörünüzü kontrol edin.
+              </p>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={handleResend}
+                disabled={resending || cooldown > 0 || isPending}
+              >
+                {resending ? (
+                  <>
+                    <Loader2 className="animate-spin mr-2 h-4 w-4" />
+                    Gönderiliyor...
+                  </>
+                ) : cooldown > 0 ? (
+                  `Tekrar gönder (${cooldown}s)`
+                ) : (
+                  'Kodu tekrar gönder'
+                )}
+              </Button>
+            </div>
           </motion.div>
         )}
 

@@ -5,10 +5,101 @@ import { verifyCodeSchema, twoFactorToggleSchema } from '../schemas';
 import { checkRateLimit, recordRateLimitAttempt } from '../utils/rate-limiter';
 import { logAuthEvent } from '../utils/audit';
 import { getCurrentUser, requireAuth } from '../utils/session';
-import { decrypt, generateRecoveryCodes } from '../utils/crypto';
+import { decrypt, generateCode, generateRecoveryCodes } from '../utils/crypto';
+import { hashVerificationCode, matchesVerificationCode } from '../utils/verification-code';
 import { generateTOTPSecret, generateTOTPQRCodeURL, verifyTOTP } from '../utils/totp';
 import type { AuthResult } from '../types';
 import { mailService } from '@/lib/services/mail-service';
+
+/** Failed attempts allowed for a single e-mailed 2FA code before it is burned. */
+const MAX_2FA_ATTEMPTS = 5;
+
+/** How long an e-mailed 2FA code stays valid. */
+const EMAIL_CODE_TTL_MINUTES = 5;
+
+/**
+ * Re-send the e-mailed 2FA code of an in-progress login.
+ *
+ * Only possible while a pending 2FA session exists, so this cannot be used to
+ * mail arbitrary addresses. Every previous unused code for the address is
+ * burned first, otherwise the old code would stay valid.
+ */
+export async function resend2FACode(email: string): Promise<AuthResult> {
+  try {
+    const normalizedEmail = email.toLowerCase().trim();
+
+    if (!normalizedEmail) {
+      return { success: false, error: 'E-posta adresi gerekli' };
+    }
+
+    const rateCheck = await checkRateLimit(`2fa-resend:${normalizedEmail}`, '2fa');
+    if (!rateCheck.allowed) {
+      return { success: false, error: 'Çok fazla kod talebi. Lütfen daha sonra tekrar deneyin.' };
+    }
+
+    const serviceClient = createServiceClient();
+
+    const { data: pending } = await serviceClient
+      .from('pending_2fa_sessions')
+      .select('id')
+      .eq('email', normalizedEmail)
+      .gt('expires_at', new Date().toISOString())
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (!pending) {
+      return { success: false, error: 'Oturum süresi doldu. Lütfen tekrar giriş yapın.' };
+    }
+
+    const burnCodes = () =>
+      serviceClient
+        .from('verification_codes')
+        .update({ used_at: new Date().toISOString() })
+        .eq('email', normalizedEmail)
+        .eq('type', '2fa_email')
+        .is('used_at', null);
+
+    await burnCodes();
+
+    const code = generateCode(6);
+    const expiresAt = new Date(Date.now() + EMAIL_CODE_TTL_MINUTES * 60 * 1000);
+
+    const { error: insertError } = await serviceClient.from('verification_codes').insert({
+      email: normalizedEmail,
+      code_hash: hashVerificationCode(code, normalizedEmail),
+      type: '2fa_email',
+      expires_at: expiresAt.toISOString(),
+      attempts: 0,
+    });
+
+    await recordRateLimitAttempt(`2fa-resend:${normalizedEmail}`, '2fa');
+
+    if (insertError) {
+      console.error('[resend2FACode] Insert failed:', insertError);
+      return { success: false, error: 'Doğrulama kodu oluşturulamadı. Lütfen tekrar deneyin.' };
+    }
+
+    const mailResult = await mailService.sendVerificationCode(normalizedEmail, code, {
+      purpose: '2fa',
+      expiresInMinutes: EMAIL_CODE_TTL_MINUTES,
+    });
+
+    if (!mailResult.success) {
+      await burnCodes();
+      console.error('[resend2FACode] Mail failed:', mailResult.error);
+      return { success: false, error: 'Doğrulama kodu gönderilemedi. Lütfen tekrar deneyin.' };
+    }
+
+    return {
+      success: true,
+      message: 'Yeni doğrulama kodu gönderildi',
+    };
+  } catch (error) {
+    console.error('[resend2FACode] Error:', error);
+    return { success: false, error: 'Bir hata oluştu' };
+  }
+}
 
 export async function verify2FACode(email: string, code: string): Promise<AuthResult> {
   try {
@@ -29,9 +120,35 @@ export async function verify2FACode(email: string, code: string): Promise<AuthRe
       return { success: false, error: 'Geçersiz veya süresi dolmuş kod' };
     }
 
-    if (verification.code !== code) {
+    // A code that has already exhausted its attempts is unusable, even if the
+    // caller keeps sending the correct digits.
+    if ((verification.attempts ?? 0) >= MAX_2FA_ATTEMPTS) {
+      await serviceClient
+        .from('verification_codes')
+        .update({ used_at: new Date().toISOString() })
+        .eq('id', verification.id);
+
+      return { success: false, error: 'Çok fazla yanlış deneme. Lütfen tekrar giriş yapın.' };
+    }
+
+    if (!matchesVerificationCode(code, email, verification.code_hash)) {
+      const attempts = (verification.attempts ?? 0) + 1;
+
+      await serviceClient
+        .from('verification_codes')
+        .update({ attempts })
+        .eq('id', verification.id);
+
       await logAuthEvent('TWO_FACTOR_FAILURE', verification.user_id, email);
-      return { success: false, error: 'Geçersiz doğrulama kodu' };
+
+      const remaining = MAX_2FA_ATTEMPTS - attempts;
+
+      return {
+        success: false,
+        error: remaining > 0
+          ? `Geçersiz doğrulama kodu. ${remaining} deneme hakkınız kaldı.`
+          : 'Çok fazla yanlış deneme. Lütfen tekrar giriş yapın.',
+      };
     }
 
     await serviceClient.from('verification_codes')

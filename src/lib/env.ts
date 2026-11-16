@@ -40,6 +40,11 @@ const envSchema = z.object({
   // Email Service (Optional - will be required in production)
   RESEND_API_KEY: z.string().optional(),
   RESEND_FROM_EMAIL: z.string().email().default('noreply@axis3.com.tr'),
+  RESEND_FROM_NAME: z.string().default('AXIS3'),
+  // Replies go to a monitored mailbox; never to the no-reply sender.
+  RESEND_REPLY_TO: z.string().email().default('destek@axis3.com.tr'),
+  // Contact-form and admin alerts.
+  ADMIN_NOTIFICATION_EMAIL: z.string().email().default('destek@axis3.com.tr'),
   
   // Analytics (Optional)
   NEXT_PUBLIC_GA_MEASUREMENT_ID: z.string().optional(),
@@ -91,6 +96,9 @@ function getEnv(): z.infer<typeof envSchema> {
       SUPABASE_SERVICE_ROLE_KEY: 'test-service-role-key',
       IYZICO_BASE_URL: 'https://sandbox-api.iyzipay.com',
       RESEND_FROM_EMAIL: 'noreply@axis3.com.tr',
+      RESEND_FROM_NAME: 'AXIS3',
+      RESEND_REPLY_TO: 'destek@axis3.com.tr',
+      ADMIN_NOTIFICATION_EMAIL: 'destek@axis3.com.tr',
     };
   }
 
@@ -126,6 +134,9 @@ export const iyzicoConfig = {
 export const resendConfig = {
   apiKey: env.RESEND_API_KEY,
   fromEmail: env.RESEND_FROM_EMAIL,
+  fromName: env.RESEND_FROM_NAME,
+  replyTo: env.RESEND_REPLY_TO,
+  adminNotificationEmail: env.ADMIN_NOTIFICATION_EMAIL,
 } as const;
 
 export const analyticsConfig = {

@@ -12,6 +12,7 @@ import {
   Section,
   Text,
   Link,
+  Preview,
 } from '@react-email/components';
 
 interface ContactNotificationProps {
@@ -21,6 +22,8 @@ interface ContactNotificationProps {
   subject: string;
   message: string;
   submittedAt: string;
+  pageUrl?: string;
+  appUrl: string;
 }
 
 export default function ContactNotification({
@@ -30,10 +33,13 @@ export default function ContactNotification({
   subject,
   message,
   submittedAt,
+  pageUrl,
+  appUrl,
 }: ContactNotificationProps) {
   return (
     <Html>
       <Head />
+      <Preview>Yeni iletişim mesajı: {name}</Preview>
       <Body style={main}>
         <Container style={container}>
           {/* Header */}
@@ -94,6 +100,16 @@ export default function ContactNotification({
                         <Text style={infoValue}>{submittedAt}</Text>
                       </td>
                     </tr>
+                    {pageUrl && (
+                      <tr>
+                        <td style={infoLabelCell}>
+                          <Text style={infoLabel}>Sayfa</Text>
+                        </td>
+                        <td style={infoValueCell}>
+                          <Text style={infoValue}>{pageUrl}</Text>
+                        </td>
+                      </tr>
+                    )}
                   </tbody>
                 </table>
               </Section>
@@ -138,7 +154,7 @@ export default function ContactNotification({
                   )}
                   <tr>
                     <td style={actionCell}>
-                      <Link href="https://axis3.com.tr/dashboard/admin/contacts" style={actionButtonSecondary}>
+                      <Link href={`${appUrl}/dashboard/admin/contacts`} style={actionButtonSecondary}>
                         TÜM MESAJLARI GÖR
                       </Link>
                     </td>
@@ -181,15 +197,15 @@ export default function ContactNotification({
             </Text>
             <Text style={footerDivider}>—</Text>
             <Text style={footerLinks}>
-              <Link href="https://axis3.com.tr/dashboard/admin" style={footerLink}>
+              <Link href={`${appUrl}/dashboard/admin`} style={footerLink}>
                 Admin Panel
               </Link>
               {' | '}
-              <Link href="https://axis3.com.tr/dashboard/admin/contacts" style={footerLink}>
+              <Link href={`${appUrl}/dashboard/admin/contacts`} style={footerLink}>
                 Mesajlar
               </Link>
               {' | '}
-              <Link href="https://axis3.com.tr/dashboard/admin/settings" style={footerLink}>
+              <Link href={`${appUrl}/dashboard/admin/settings`} style={footerLink}>
                 Ayarlar
               </Link>
             </Text>

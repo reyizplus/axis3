@@ -7,6 +7,7 @@ import { checkRateLimit, recordRateLimitAttempt } from '../utils/rate-limiter';
 import { logAuthEvent } from '../utils/audit';
 import { getCurrentUser } from '../utils/session';
 import { generateCode, encrypt } from '../utils/crypto';
+import { hashVerificationCode } from '../utils/verification-code';
 import type { AuthResult } from '../types';
 import { mailService } from '@/lib/services/mail-service';
 
@@ -83,30 +84,64 @@ export async function signIn(formData: FormData): Promise<AuthResult<{ requiresT
       await supabase.auth.signOut();
 
       const code = generateCode(6);
+      // The code is valid for 5 minutes, but the pending session stays alive
+      // longer so the customer can request a fresh code without logging in
+      // again from scratch.
       const expiresAt = new Date(Date.now() + 5 * 60 * 1000);
+      const pendingExpiresAt = new Date(Date.now() + 15 * 60 * 1000);
 
-      if (serviceClient) {
-        await serviceClient.from('verification_codes').insert({
+      if (!serviceClient) {
+        return { success: false, error: 'Doğrulama kodu gönderilemedi. Lütfen tekrar deneyin.' };
+      }
+
+      const { error: codeInsertError } = await serviceClient
+        .from('verification_codes')
+        .insert({
           user_id: authData.user.id,
-          email: email,
-          code,
+          email,
+          code_hash: hashVerificationCode(code, email),
           type: '2fa_email',
           expires_at: expiresAt.toISOString(),
           attempts: 0,
         });
+
+      if (codeInsertError) {
+        console.error('[signIn] 2FA code insert failed:', codeInsertError);
+        return { success: false, error: 'Doğrulama kodu gönderilemedi. Lütfen tekrar deneyin.' };
       }
 
-      await mailService.sendVerificationCode(email, code);
+      const mailResult = await mailService.sendVerificationCode(email, code, {
+        purpose: '2fa',
+        expiresInMinutes: 5,
+      });
+      if (!mailResult.success) {
+        // The user must not be able to use a code that was never delivered.
+        await serviceClient
+          .from('verification_codes')
+          .update({ used_at: new Date().toISOString() })
+          .eq('email', email.toLowerCase())
+          .eq('type', '2fa_email')
+          .is('used_at', null);
+
+        console.error('[signIn] 2FA email failed:', mailResult.error);
+        return { success: false, error: 'Doğrulama kodu gönderilemedi. Lütfen tekrar deneyin.' };
+      }
 
       const encryptedPassword = encrypt(password);
-      if (serviceClient) {
-        await serviceClient.from('pending_2fa_sessions').insert({
+
+      const { error: pendingError } = await serviceClient
+        .from('pending_2fa_sessions')
+        .insert({
           email,
           password_hash: encryptedPassword,
           two_factor_enabled: true,
           user_metadata: { user_id: authData.user.id },
-          expires_at: expiresAt.toISOString(),
+          expires_at: pendingExpiresAt.toISOString(),
         });
+
+      if (pendingError) {
+        console.error('[signIn] 2FA session insert failed:', pendingError);
+        return { success: false, error: 'Doğrulama başlatılamadı. Lütfen tekrar deneyin.' };
       }
 
       return {

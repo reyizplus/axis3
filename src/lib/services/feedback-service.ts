@@ -124,11 +124,6 @@ export class FeedbackService {
         return { success: false, error: 'Geri bildirim gönderilemedi' };
       }
 
-            // Send admin notification email (non-blocking)
-      this.sendAdminNotification(data as unknown as Feedback).catch(err => {
-        console.error('[FeedbackService] Failed to send admin notification:', err);
-      });
-
       return { success: true, feedback: data as unknown as Feedback };
     } catch (error) {
       console.error('[FeedbackService] Create feedback error:', error);
@@ -276,13 +271,6 @@ export class FeedbackService {
         return { success: false, error: 'Güncelleme başarısız' };
       }
 
-            // Send user notification if responded
-      if (adminResponse) {
-        this.sendUserNotification(feedbackId).catch(err => {
-          console.error('[FeedbackService] Failed to send user notification:', err);
-        });
-      }
-
       return { success: true };
     } catch (error) {
       console.error('[FeedbackService] Update feedback error:', error);
@@ -370,62 +358,10 @@ export class FeedbackService {
         return { success: false, error: 'Mesaj gönderilemedi' };
       }
 
-            // Send admin notification email (non-blocking)
-      this.sendContactNotification(data as unknown as Feedback).catch(err => {
-        console.error('[FeedbackService] Failed to send contact notification:', err);
-      });
-
       return { success: true };
     } catch (error) {
       console.error('[FeedbackService] Create contact message error:', error);
       return { success: false, error: 'Beklenmeyen bir hata oluştu' };
-    }
-  }
-
-  /**
-   * Send admin notification email
-   * @private
-   */
-  private async sendAdminNotification(_feedback: Feedback): Promise<void> {
-    try {
-            // TODO: Implement admin notification email template
-      // For now, just log
-          } catch (error) {
-      console.error('[FeedbackService] Admin notification error:', error);
-    }
-  }
-
-  /**
-   * Send contact form notification to admin
-   * @private
-   */
-  private async sendContactNotification(_feedback: Feedback): Promise<void> {
-    try {
-            // TODO: Implement contact notification email template
-      // For now, just log
-          } catch (error) {
-      console.error('[FeedbackService] Contact notification error:', error);
-    }
-  }
-
-  /**
-   * Send user notification email
-   * @private
-   */
-  private async sendUserNotification(feedbackId: string): Promise<void> {
-    try {
-            // Fetch feedback with user data
-      const result = await this.getFeedbackById(feedbackId);
-      
-      if (!result.success || !result.feedback) {
-        console.error('[FeedbackService] Failed to fetch feedback for notification');
-        return;
-      }
-
-      // TODO: Implement user notification email template
-      // For now, just log
-          } catch (error) {
-      console.error('[FeedbackService] User notification error:', error);
     }
   }
 

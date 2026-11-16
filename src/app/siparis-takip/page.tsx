@@ -28,8 +28,6 @@ const ORDER_STATUS_LABELS: Record<string, { label: string; className: string }> 
   preparing: { label: 'Hazırlanıyor', className: 'bg-blue-500/10 text-blue-600' },
   printing: { label: 'Baskıda', className: 'bg-purple-500/10 text-purple-600' },
   quality_check: { label: 'Kalite Kontrol', className: 'bg-indigo-500/10 text-indigo-600' },
-  washing: { label: 'Yıkamada', className: 'bg-sky-500/10 text-sky-600' },
-  curing: { label: 'Kürlemede', className: 'bg-amber-500/10 text-amber-600' },
   packaging: { label: 'Paketleniyor', className: 'bg-violet-500/10 text-violet-600' },
   shipped: { label: 'Kargoda', className: 'bg-cyan-500/10 text-cyan-600' },
   delivered: { label: 'Teslim Edildi', className: 'bg-green-500/10 text-green-600' },

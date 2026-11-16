@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
-import { mailService } from '@/lib/services/mail-service';
+import { notifyOrderStatusChange } from '@/lib/services/order-notification-service';
 import { releaseOrderStock } from '@/lib/services/order-cancellation-service';
 import { releaseCoupon } from '@/lib/services/coupon-service';
 import type { OrderStatus } from '@/lib/services/order-service';
@@ -32,7 +32,7 @@ export async function PATCH(
 
     const validStatuses: OrderStatus[] = [
       'pending', 'payment_received', 'preparing', 'printing', 'quality_check',
-      'washing', 'curing', 'packaging', 'shipped', 'delivered', 'cancelled', 'refunded'
+      'packaging', 'shipped', 'delivered', 'cancelled', 'refunded'
     ];
     if (!validStatuses.includes(newStatus)) {
       return NextResponse.json({ success: false, error: 'Geçersiz durum' }, { status: 400 });
@@ -77,15 +77,11 @@ export async function PATCH(
       await releaseCoupon(orderId);
     }
 
-    const { data: completeOrder } = await supabase
-      .from('orders')
-      .select('*, user:users(email, full_name)')
-      .eq('id', orderId)
-      .single();
-
     let emailSent = false;
-    if (completeOrder && oldStatus !== newStatus) {
-      const result = await mailService.sendOrderStatusUpdate(completeOrder, oldStatus);
+    if (oldStatus !== newStatus) {
+      const result = await notifyOrderStatusChange(orderId, oldStatus, newStatus, {
+        includeTracking: shareTrackingLink,
+      });
       emailSent = result.success;
       if (!result.success) {
         console.error('[Order Status API] Email failed:', result.error);

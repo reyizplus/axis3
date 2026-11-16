@@ -12,11 +12,13 @@ import {
   Section,
   Text,
   Link,
+  Preview,
 } from '@react-email/components';
 
 interface OrderConfirmationProps {
   order: {
     orderNumber: string;
+    orderDate?: string;
     totalPrice: number;
     discountAmount: number;
     couponCode?: string | null;
@@ -28,6 +30,7 @@ interface OrderConfirmationProps {
     }>;
     deliveryAddress?: string;
     estimatedDeliveryDate?: string;
+    dashboardUrl: string;
   };
 }
 
@@ -39,6 +42,7 @@ export default function OrderConfirmation({ order }: OrderConfirmationProps) {
   return (
     <Html>
       <Head />
+      <Preview>Siparişiniz alındı — {order.orderNumber}</Preview>
       <Body style={main}>
         <Container style={container}>
           {/* Header */}
@@ -74,7 +78,7 @@ export default function OrderConfirmation({ order }: OrderConfirmationProps) {
                         <Text style={summaryLabel}>Sipariş Tarihi</Text>
                       </td>
                       <td style={summaryValueCell}>
-                        <Text style={summaryValue}>{new Date().toLocaleDateString('tr-TR')}</Text>
+                        <Text style={summaryValue}>{order.orderDate || '—'}</Text>
                       </td>
                     </tr>
                     {order.estimatedDeliveryDate && (
@@ -214,8 +218,8 @@ export default function OrderConfirmation({ order }: OrderConfirmationProps) {
 
             {/* CTA */}
             <Section style={ctaSection}>
-              <Link href="https://axis3.com.tr/dashboard/orders" style={ctaButton}>
-                SİPARİŞİ TAKİP ET
+              <Link href={order.dashboardUrl} style={ctaButton}>
+                SİPARİŞLERİM
               </Link>
             </Section>
 
@@ -435,6 +439,7 @@ const addressText = {
   lineHeight: '1.6',
   color: '#333333',
   margin: '0',
+  whiteSpace: 'pre-line' as const,
 };
 
 const timelineSection = {

@@ -11,6 +11,7 @@ export interface EmailResult {
 
 export interface OrderEmailData {
   orderNumber: string;
+  /** Order creation date, already formatted for display (e.g. "1 Kasım 2026"). */
   orderDate: string;
   totalAmount: number;
   totalPrice: number; // Added for OrderConfirmation template compatibility
@@ -19,8 +20,12 @@ export interface OrderEmailData {
   /** Coupon code shown next to the discount line, when present. */
   couponCode: string | null;
   items: OrderItemEmailData[];
+  /** Formatted, human readable shipping address (newlines allowed). */
   deliveryAddress: string;
-  estimatedDeliveryDate: string;
+  /** Formatted estimated delivery date, when known. */
+  estimatedDeliveryDate?: string;
+  /** Absolute URL of the customer's order list. */
+  dashboardUrl: string;
   userEmail: string;
   userName: string;
 }
@@ -35,6 +40,7 @@ export interface OrderItemEmailData {
 
 export interface OrderStatusEmailData {
   orderNumber: string;
+  orderId: string;
   oldStatus: string;
   newStatus: string;
   statusMessage: string;
@@ -43,25 +49,37 @@ export interface OrderStatusEmailData {
   trackingNumber?: string;
   cargoCompany?: string;
   items: { fileName: string; quantity: number; }[];
+  /** Absolute URL of this specific order in the dashboard. */
+  dashboardUrl: string;
   userEmail: string;
   userName: string;
 }
 
-export type OrderStatus = 
+/**
+ * Statuses allowed by the `orders.status` CHECK constraint
+ * (see supabase/migrations/001_initial_schema.sql).
+ */
+export type OrderStatus =
   | 'pending'
-  | 'processing'
+  | 'payment_received'
+  | 'preparing'
   | 'printing'
   | 'quality_check'
+  | 'packaging'
   | 'shipped'
-  | 'completed'
-  | 'cancelled';
+  | 'delivered'
+  | 'cancelled'
+  | 'refunded';
 
 export const ORDER_STATUS_MESSAGES: Record<OrderStatus, string> = {
-  pending: 'Siparişiniz alındı ve işleme alınmayı bekliyor.',
-  processing: 'Siparişiniz işleme alındı. Baskı hazırlıkları yapılıyor.',
+  pending: 'Siparişiniz alındı ve ödeme onayı bekleniyor.',
+  payment_received: 'Ödemeniz onaylandı. Siparişiniz üretim sırasına alındı.',
+  preparing: 'Siparişiniz işleme alındı. Baskı hazırlıkları yapılıyor.',
   printing: 'Baskı işlemi başladı. Modelleriniz üretiliyor.',
   quality_check: 'Baskı tamamlandı. Kalite kontrolü yapılıyor.',
+  packaging: 'Siparişiniz paketleniyor ve kargoya hazırlanıyor.',
   shipped: 'Siparişiniz kargoya verildi. Yakında elinizde olacak!',
-  completed: 'Siparişiniz teslim edildi. Teşekkür ederiz!',
+  delivered: 'Siparişiniz teslim edildi. Teşekkür ederiz!',
   cancelled: 'Siparişiniz iptal edildi.',
+  refunded: 'Sipariş tutarı iade edildi.',
 };

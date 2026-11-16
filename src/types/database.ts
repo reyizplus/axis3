@@ -303,6 +303,24 @@ export interface Database {
         }
         Relationships: []
       }
+      email_logs: {
+        Row: {
+          id: string; user_id: string | null; recipient: string; email_type: string
+          subject: string; status: 'sent' | 'failed' | 'skipped'; provider_id: string | null
+          error: string | null; metadata: Json; created_at: string
+        }
+        Insert: {
+          id?: string; user_id?: string | null; recipient: string; email_type: string
+          subject: string; status: 'sent' | 'failed' | 'skipped'; provider_id?: string | null
+          error?: string | null; metadata?: Json; created_at?: string
+        }
+        Update: {
+          id?: string; user_id?: string | null; recipient?: string; email_type?: string
+          subject?: string; status?: 'sent' | 'failed' | 'skipped'; provider_id?: string | null
+          error?: string | null; metadata?: Json; created_at?: string
+        }
+        Relationships: []
+      }
       feedback: {
         Row: {
           id: string; user_id: string | null; category: string; title: string; description: string
@@ -938,15 +956,18 @@ export interface Database {
       }
       verification_codes: {
         Row: {
-          id: string; user_id: string | null; email: string | null; code: string; type: string
+          id: string; user_id: string | null; email: string | null; code: string | null
+          code_hash: string | null; type: string
           expires_at: string; used_at: string | null; attempts: number; created_at: string
         }
         Insert: {
-          id?: string; user_id?: string | null; email?: string | null; code: string; type?: string
+          id?: string; user_id?: string | null; email?: string | null; code?: string | null
+          code_hash?: string | null; type?: string
           expires_at: string; used_at?: string | null; attempts?: number; created_at?: string
         }
         Update: {
-          id?: string; user_id?: string | null; email?: string | null; code?: string; type?: string
+          id?: string; user_id?: string | null; email?: string | null; code?: string | null
+          code_hash?: string | null; type?: string
           expires_at?: string; used_at?: string | null; attempts?: number; created_at?: string
         }
         Relationships: []

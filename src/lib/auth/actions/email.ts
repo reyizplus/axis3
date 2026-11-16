@@ -1,21 +1,28 @@
 'use server';
 
-import { createClient } from '@/lib/supabase/server';
+import { createClient, createServiceClient } from '@/lib/supabase/server';
 import { logAuthEvent } from '../utils/audit';
 import { generateCode } from '../utils/crypto';
+import { hashVerificationCode, matchesVerificationCode } from '../utils/verification-code';
 import type { AuthResult } from '../types';
 import { mailService } from '@/lib/services/mail-service';
+
+const MAX_ATTEMPTS = 3;
 
 export async function verifyEmail(code: string): Promise<AuthResult> {
   try {
     const supabase = await createClient();
     const { data: { user } } = await supabase.auth.getUser();
 
-    if (!user) {
+    if (!user || !user.email) {
       return { success: false, error: 'Oturum bulunamadı' };
     }
 
-    const { data: verification } = await supabase
+    // verification_codes is server-only since migration 101 (no client RLS
+    // policies, anon/authenticated privileges revoked).
+    const serviceClient = createServiceClient();
+
+    const { data: verification } = await serviceClient
       .from('verification_codes')
       .select('*')
       .eq('user_id', user.id)
@@ -30,16 +37,16 @@ export async function verifyEmail(code: string): Promise<AuthResult> {
       return { success: false, error: 'Geçerli bir doğrulama kodu bulunamadı' };
     }
 
-    if (verification.attempts >= 3) {
+    if ((verification.attempts ?? 0) >= MAX_ATTEMPTS) {
       return { success: false, error: 'Çok fazla yanlış deneme. Yeni kod talep edin.' };
     }
 
-    if (verification.code !== code) {
-      await supabase.from('verification_codes')
+    if (!matchesVerificationCode(code, user.email, verification.code_hash)) {
+      await serviceClient.from('verification_codes')
         .update({ attempts: (verification.attempts || 0) + 1 })
         .eq('id', verification.id);
 
-      const remaining = 3 - (verification.attempts + 1);
+      const remaining = MAX_ATTEMPTS - (verification.attempts + 1);
       return {
         success: false,
         error: remaining > 0
@@ -48,18 +55,18 @@ export async function verifyEmail(code: string): Promise<AuthResult> {
       };
     }
 
-    await supabase.from('verification_codes')
+    await serviceClient.from('verification_codes')
       .update({ used_at: new Date().toISOString() })
       .eq('id', verification.id);
 
-    await supabase.from('users')
+    await serviceClient.from('users')
       .update({
         email_verified: true,
         email_verified_at: new Date().toISOString(),
       })
       .eq('id', user.id);
 
-    await logAuthEvent('EMAIL_VERIFY', user.id, user.email ?? null);
+    await logAuthEvent('EMAIL_VERIFY', user.id, user.email);
 
     return { success: true, message: 'E-posta doğrulandı' };
   } catch (error) {
@@ -77,8 +84,10 @@ export async function resendVerificationCode(): Promise<AuthResult> {
       return { success: false, error: 'Oturum bulunamadı' };
     }
 
+    const serviceClient = createServiceClient();
+
     const fifteenMinutesAgo = new Date(Date.now() - 15 * 60 * 1000);
-    const { count } = await supabase
+    const { count } = await serviceClient
       .from('verification_codes')
       .select('*', { count: 'exact', head: true })
       .eq('user_id', user.id)
@@ -92,15 +101,28 @@ export async function resendVerificationCode(): Promise<AuthResult> {
     const code = generateCode(6);
     const expiresAt = new Date(Date.now() + 15 * 60 * 1000);
 
-    await supabase.from('verification_codes').insert({
+    const { error: insertError } = await serviceClient.from('verification_codes').insert({
       user_id: user.id,
-      code,
+      email: user.email,
+      code_hash: hashVerificationCode(code, user.email),
       type: 'email_verification',
       expires_at: expiresAt.toISOString(),
       attempts: 0,
     });
 
-    await mailService.sendVerificationCode(user.email, code);
+    if (insertError) {
+      console.error('[resendVerificationCode] Insert failed:', insertError);
+      return { success: false, error: 'Doğrulama kodu oluşturulamadı. Lütfen tekrar deneyin.' };
+    }
+
+    const mailResult = await mailService.sendVerificationCode(user.email, code, {
+      purpose: 'email_verification',
+      expiresInMinutes: 15,
+    });
+    if (!mailResult.success) {
+      console.error('[resendVerificationCode] Mail failed:', mailResult.error);
+      return { success: false, error: 'Doğrulama kodu gönderilemedi. Lütfen tekrar deneyin.' };
+    }
 
     return { success: true, message: 'Doğrulama kodu gönderildi' };
   } catch (error) {

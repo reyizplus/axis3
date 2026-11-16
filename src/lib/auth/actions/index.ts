@@ -19,6 +19,7 @@ export {
   toggle2FA,
   getRecoveryCodes,
   verifyRecoveryCode,
+  resend2FACode,
 } from './two-factor';
 export { signOut, getSessionUser } from './session';
 export { verifyEmail, resendVerificationCode } from './email';

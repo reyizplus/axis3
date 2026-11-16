@@ -1,7 +1,8 @@
 'use client';
 
 import { useState, useTransition, useEffect } from 'react';
-import { useRouter, useSearchParams } from 'next/navigation';
+import Link from 'next/link';
+import { useSearchParams } from 'next/navigation';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
@@ -13,13 +14,24 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { PasswordStrength, PasswordRequirements } from '@/components/auth/ui/password-strength';
-import { Loader2, Lock, Eye, EyeOff, KeyRound, ShieldAlert } from 'lucide-react';
+import {
+  Loader2,
+  Lock,
+  Eye,
+  EyeOff,
+  KeyRound,
+  ShieldAlert,
+  ShieldCheck,
+  Mail,
+  CheckCircle2,
+  ArrowLeft,
+  Clock,
+} from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 type ResetPasswordFormValues = z.infer<typeof resetPasswordSchema>;
 
 export function ResetPasswordForm() {
-  const router = useRouter();
   const searchParams = useSearchParams();
   const ref = searchParams.get('ref');
 
@@ -27,7 +39,9 @@ export function ResetPasswordForm() {
   const [showPassword, setShowPassword] = useState(false);
   const [tokenValid, setTokenValid] = useState<boolean | null>(null);
   const [checking, setChecking] = useState(true);
+  const [accountEmail, setAccountEmail] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
+  const [done, setDone] = useState(false);
 
   const form = useForm<ResetPasswordFormValues>({
     resolver: zodResolver(resetPasswordSchema),
@@ -47,6 +61,7 @@ export function ResetPasswordForm() {
     startTransition(async () => {
       const result = await validateResetToken(ref);
       setTokenValid(result.valid);
+      setAccountEmail(result.email || '');
       setChecking(false);
     });
   }, [ref]);
@@ -61,7 +76,7 @@ export function ResetPasswordForm() {
       const result = await resetPassword(ref!, values.password);
       if (result.success) {
         toast.success('Şifreniz başarıyla güncellendi');
-        router.push('/login');
+        setDone(true);
       } else {
         toast.error(result.error);
       }
@@ -94,7 +109,40 @@ export function ResetPasswordForm() {
           </p>
         </div>
         <Button asChild className="mt-4">
-          <a href="/forgot-password">Yeni Bağlantı Talep Et</a>
+          <Link href="/forgot-password">Yeni Bağlantı Talep Et</Link>
+        </Button>
+      </motion.div>
+    );
+  }
+
+  if (done) {
+    return (
+      <motion.div
+        initial={{ opacity: 0, scale: 0.95 }}
+        animate={{ opacity: 1, scale: 1 }}
+        className="text-center space-y-4"
+      >
+        <div className="w-16 h-16 rounded-full bg-green-500/10 flex items-center justify-center mx-auto">
+          <CheckCircle2 className="w-8 h-8 text-green-500" />
+        </div>
+        <div className="space-y-2">
+          <h3 className="text-lg font-semibold">Şifreniz Güncellendi</h3>
+          <p className="text-sm text-muted-foreground">
+            {accountEmail ? (
+              <>
+                <span className="font-medium text-foreground">{accountEmail}</span> hesabının
+                şifresi başarıyla değiştirildi.
+              </>
+            ) : (
+              'Hesabınızın şifresi başarıyla değiştirildi.'
+            )}{' '}
+            Güvenlik için tüm cihazlardaki oturumlar kapatıldı.
+          </p>
+        </div>
+        <Button asChild className="mt-4">
+          <Link href="/login">
+            Giriş Yap
+          </Link>
         </Button>
       </motion.div>
     );
@@ -107,17 +155,38 @@ export function ResetPasswordForm() {
       transition={{ duration: 0.3 }}
     >
       <form onSubmit={handleSubmit(onSubmit)} className="space-y-5" noValidate>
-        <div className="flex items-center justify-center mb-2">
-          <div className="w-12 h-12 rounded-full bg-primary/10 flex items-center justify-center">
-            <KeyRound className="w-6 h-6 text-primary" />
+        <div className="flex items-center justify-center">
+          <div className="w-14 h-14 rounded-full bg-primary/10 flex items-center justify-center">
+            <KeyRound className="w-7 h-7 text-primary" />
           </div>
         </div>
 
         <div className="text-center space-y-1">
+          <h3 className="text-lg font-semibold">Yeni Şifre Belirleyin</h3>
           <p className="text-sm text-muted-foreground">
-            Yeni şifrenizi belirleyin
+            Hesabınız için güçlü ve daha önce kullanmadığınız bir şifre seçin.
           </p>
         </div>
+
+        {accountEmail && (
+          <div className="rounded-xl border border-border/60 bg-muted/30 px-4 py-3">
+            <div className="flex items-center gap-3">
+              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-primary/10">
+                <Mail className="h-4 w-4 text-primary" />
+              </div>
+              <div className="min-w-0">
+                <p className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                  Şifresi sıfırlanan hesap
+                </p>
+                <p className="truncate text-sm font-medium">{accountEmail}</p>
+              </div>
+            </div>
+            <div className="mt-3 flex items-center gap-2 border-t border-border/50 pt-3 text-xs text-muted-foreground">
+              <Clock className="h-3.5 w-3.5" />
+              Bu bağlantı 1 saat geçerlidir ve yalnızca bir kez kullanılabilir.
+            </div>
+          </div>
+        )}
 
         <div className="space-y-2">
           <Label htmlFor="new-password">Yeni Şifre</Label>
@@ -151,7 +220,7 @@ export function ResetPasswordForm() {
         <div className="space-y-2">
           <Label htmlFor="confirm-password">Yeni Şifre (Tekrar)</Label>
           <div className="relative">
-            <Lock className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" />
+            <ShieldCheck className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" />
             <Input
               id="confirm-password"
               type={showPassword ? 'text' : 'password'}
@@ -183,6 +252,16 @@ export function ResetPasswordForm() {
             'Şifreyi Güncelle'
           )}
         </Button>
+
+        <p className="text-center text-sm text-muted-foreground">
+          <Link
+            href="/login"
+            className="font-medium text-primary transition-colors hover:text-primary/80"
+          >
+            <ArrowLeft className="mr-1 inline h-4 w-4" />
+            Giriş sayfasına dön
+          </Link>
+        </p>
       </form>
     </motion.div>
   );
