@@ -7,6 +7,7 @@ import WelcomeEmail from '@/emails/welcome';
 import PasswordResetEmail from '@/emails/password-reset';
 import ContactNotification from '@/emails/contact-notification';
 import { formatAddress, formatDate, prepareOrderEmailData, prepareOrderStatusEmailData } from '@/lib/email/templates';
+import { ORDER_STATUS_LABELS, type OrderStatus } from '@/lib/email/types';
 
 const dbOrder = {
   id: '11111111-2222-4333-8444-555555555555',
@@ -102,6 +103,30 @@ describe('order-status-update template', () => {
   it('keeps items so the product list is not empty', async () => {
     const data = prepareOrderStatusEmailData(dbOrder, 'preparing');
     expect(data.items.map((i) => i.fileName)).toEqual(['bracket_v3.stl', 'gear.stl']);
+  });
+
+  it('renders a Turkish label for every canonical status', async () => {
+    for (const status of Object.keys(ORDER_STATUS_LABELS) as OrderStatus[]) {
+      const html = await render(
+        OrderStatusUpdate({
+          order: prepareOrderStatusEmailData({ ...dbOrder, status }, 'pending'),
+        })
+      );
+
+      expect(html).toContain(ORDER_STATUS_LABELS[status]);
+      expect(html).not.toContain(`>${status}<`);
+    }
+  });
+
+  it('never leaks an unknown status code to the customer', async () => {
+    const html = await render(
+      OrderStatusUpdate({
+        order: prepareOrderStatusEmailData({ ...dbOrder, status: 'washing' }, 'printing'),
+      })
+    );
+
+    expect(html).toContain('Sipariş durumu güncellendi');
+    expect(html).not.toContain('>washing<');
   });
 });
 

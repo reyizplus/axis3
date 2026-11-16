@@ -14,6 +14,7 @@ import {
   Link,
   Preview,
 } from '@react-email/components';
+import { ORDER_STATUS_LABELS, type OrderStatus } from '@/lib/email/types';
 
 interface OrderStatusUpdateProps {
   order: {
@@ -41,22 +42,10 @@ const CARGO_COMPANY_INFO: Record<string, { name: string; logoUrl: string; tracki
   ptt: { name: 'PTT Kargo', logoUrl: 'https://axis3.com.tr/images/cargo/ptt.png', trackingUrl: 'https://gonderitakip.ptt.gov.tr/?code=' },
 };
 
-const statusLabels: { [key: string]: string } = {
-  pending: 'Ödeme Bekleniyor',
-  payment_received: 'Ödeme Onaylandı',
-  preparing: 'Hazırlanıyor',
-  printing: 'Baskıda',
-  quality_check: 'Kalite Kontrol',
-  packaging: 'Paketleniyor',
-  shipped: 'Kargoda',
-  delivered: 'Teslim Edildi',
-  cancelled: 'İptal Edildi',
-  refunded: 'İade Edildi',
-};
-
 export default function OrderStatusUpdate({ order }: OrderStatusUpdateProps) {
   const formattedTotal = new Intl.NumberFormat('tr-TR', { style: 'currency', currency: 'TRY' }).format(order.totalPrice);
-  const currentStatusLabel = statusLabels[order.newStatus] || order.newStatus;
+  const currentStatusLabel =
+    ORDER_STATUS_LABELS[order.newStatus as OrderStatus] || 'Sipariş durumu güncellendi';
   const isCompleted = order.newStatus === 'delivered';
   const isCancelled = order.newStatus === 'cancelled';
   const isShipped = order.newStatus === 'shipped' || order.newStatus === 'delivered';

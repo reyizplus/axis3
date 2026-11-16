@@ -36,7 +36,12 @@ interface DeliverInput {
   html: string;
   text: string;
   emailType: string;
-  replyTo?: string;
+  /**
+   * Overrides the global Reply-To. Pass `null` for purely transactional
+   * security mail (password reset, verification codes) where replying is
+   * meaningless: the header is omitted and answers fall back to From.
+   */
+  replyTo?: string | null;
   userId?: string | null;
   metadata?: Json;
 }
@@ -113,7 +118,10 @@ class MailService {
         subject: input.subject,
         html: input.html,
         text: input.text,
-        replyTo: input.replyTo || EMAIL_CONFIG.replyTo,
+        replyTo:
+          input.replyTo === null
+            ? undefined
+            : input.replyTo || EMAIL_CONFIG.replyTo,
       });
 
       if (error) {
@@ -171,6 +179,8 @@ class MailService {
         html,
         text,
         emailType: 'order_confirmation',
+        // Order mail: answers must go to noreply, not a shared inbox.
+        replyTo: null,
         userId: order?.user_id ?? null,
         metadata: { orderNumber: emailData.orderNumber, orderId: order?.id },
       });
@@ -201,6 +211,8 @@ class MailService {
         html,
         text,
         emailType: 'order_status_update',
+        // Order mail: answers must go to noreply, not a shared inbox.
+        replyTo: null,
         userId: order?.user_id ?? null,
         metadata: {
           orderNumber: emailData.orderNumber,
@@ -262,6 +274,8 @@ class MailService {
         html,
         text,
         emailType: 'password_reset',
+        // Security mail: no Reply-To, answers must not land in a shared inbox.
+        replyTo: null,
       });
     } catch (error) {
       console.error('[MailService] Password reset email error:', error);
@@ -350,6 +364,8 @@ class MailService {
         html,
         text,
         emailType: `verification_${purpose}`,
+        // Security mail: no Reply-To, answers must not land in a shared inbox.
+        replyTo: null,
         metadata: { purpose, expiresInMinutes },
       });
     } catch (error) {

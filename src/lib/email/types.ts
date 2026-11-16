@@ -83,3 +83,22 @@ export const ORDER_STATUS_MESSAGES: Record<OrderStatus, string> = {
   cancelled: 'Siparişiniz iptal edildi.',
   refunded: 'Sipariş tutarı iade edildi.',
 };
+
+/**
+ * Customer-facing Turkish labels for order statuses.
+ *
+ * Single source of truth for every e-mail; the raw database code must never
+ * reach the customer.
+ */
+export const ORDER_STATUS_LABELS: Record<OrderStatus, string> = {
+  pending: 'Ödeme Bekleniyor',
+  payment_received: 'Ödeme Onaylandı',
+  preparing: 'Hazırlanıyor',
+  printing: 'Baskıda',
+  quality_check: 'Kalite Kontrol',
+  packaging: 'Paketleniyor',
+  shipped: 'Kargoda',
+  delivered: 'Teslim Edildi',
+  cancelled: 'İptal Edildi',
+  refunded: 'İade Edildi',
+};
