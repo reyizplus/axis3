@@ -166,6 +166,12 @@ NEXT_PUBLIC_RATE_LIMIT_WINDOW=900000
 
 #### Step 3: Build and Run with Docker
 
+> **Guncelleme (deploy) icin:** depo kokunde `bash scripts/deploy-prod.sh` calistirin.
+> Betik depoyu `origin/main` ile esitler, port 3000'i tutan dev konteynerini durdurur,
+> `app-prod` imajini yeniden insa eder ve **yeni kodun imaja girdigini konteyner icinde
+> `grep` ile dogrular**. Basliklardan (ornegin HSTS) surum anlasilamaz; Cloudflare kendi
+> varsayilan HSTS basligini dondurur.
+
 ```bash
 # Build production image
 docker build -t axis3-production -f Dockerfile .
