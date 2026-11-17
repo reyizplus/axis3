@@ -6,6 +6,10 @@
  *
  * Docker healthcheck'i hızlı kalmalı; bu yüzden slicer kontrolü yalnızca
  * `?deep=1` ile yapılır (yanıt süresi artar, durum kodu değişmez).
+ *
+ * `build` alanı imajın içine derleme anında gömülür (Dockerfile: GIT_SHA).
+ * Böylece yayındaki sürüm tek bir `curl` ile okunabilir; HTTP başlıkları
+ * (Cloudflare'in kendi HSTS başlığı dahil) sürüm hakkında bilgi vermiyor.
  */
 
 import { NextResponse } from 'next/server';
@@ -30,6 +34,7 @@ export async function GET(request: Request) {
     timestamp: new Date().toISOString(),
     uptime: `${uptime}s`,
     responseTime: `${responseTime}ms`,
+    ...(process.env.NEXT_PUBLIC_BUILD_SHA ? { build: process.env.NEXT_PUBLIC_BUILD_SHA } : {}),
     ...(slicer ? { slicer } : {}),
   };
 

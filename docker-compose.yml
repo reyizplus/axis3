@@ -135,6 +135,9 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        # Yayindaki surumu /api/health uzerinden okumak icin (deploy-prod.sh doldurur)
+        GIT_SHA: ${GIT_SHA:-dev}
     container_name: axis3-app-prod
     restart: unless-stopped
     ports:

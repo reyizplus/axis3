@@ -40,6 +40,12 @@ ENV NODE_ENV=production
 ARG NEXT_PUBLIC_SITE_URL=https://axis3.com.tr
 ENV NEXT_PUBLIC_SITE_URL=$NEXT_PUBLIC_SITE_URL
 
+# Derleme aninda gomulen surum etiketi (/api/health -> build).
+# Yayindaki kodun gercekten guncel olup olmadigini basliklardan anlamak
+# mumkun olmadigi icin tek guvenilir surum gostergesi budur.
+ARG GIT_SHA=dev
+ENV NEXT_PUBLIC_BUILD_SHA=$GIT_SHA
+
 # Build the application
 RUN npm run build
 

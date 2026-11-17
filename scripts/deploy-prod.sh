@@ -46,12 +46,20 @@ echo "uzak : $(git log -1 --oneline "origin/$BRANCH")"
 git reset --hard "origin/$BRANCH"
 echo "yerel: $(git log -1 --oneline HEAD)"
 
+# Imaja gomulecek surum etiketi (/api/health -> build)
+export GIT_SHA="$(git rev-parse --short HEAD)"
+echo "GIT_SHA=$GIT_SHA"
+
 say "Port 3000'i tutan konteynerler"
 docker ps --filter publish=3000 --format '{{.Names}}  {{.Image}}  {{.Status}}' || true
 
-say "Dev uygulamasi durduruluyor (port cakismasi)"
+say "Port 3000'i tutan konteynerler durduruluyor (bu surumun kendisi haric)"
 docker compose stop app >/dev/null 2>&1 || true
-docker stop axis3-app >/dev/null 2>&1 || true
+HOLDERS=$(docker ps --filter publish=3000 --format '{{.Names}}' | grep -v "^${CONTAINER}$" || true)
+for c in $HOLDERS; do
+  echo "durduruluyor: $c"
+  docker stop "$c" >/dev/null
+done
 
 say "Uretim imaji insa ediliyor (birkac dakika surer; 1 saniyede bitiyorsa cache'e takilmistir)"
 BUILD_START=$(date +%s)
@@ -81,7 +89,14 @@ else
 fi
 
 say "Canli kontrol"
-curl -fsS -o /dev/null -w 'http://127.0.0.1:3000/api/health -> %{http_code}\n' http://127.0.0.1:3000/api/health || true
+HEALTH_JSON=$(curl -fsS http://127.0.0.1:3000/api/health || true)
+printf '%s\n' "$HEALTH_JSON"
+if printf '%s' "$HEALTH_JSON" | grep -q "\"build\":\"$GIT_SHA\""; then
+  echo "OK - /api/health build=$GIT_SHA (yayindaki surum bu commit)"
+else
+  echo "UYARI - /api/health icinde build=$GIT_SHA gorunmuyor. Eski imaj ayakta olabilir." >&2
+  echo "        Uygulama eski imajla derlendiyse: docker compose --profile production up -d --force-recreate $SERVICE" >&2
+fi
 
 say "Durum"
 docker compose --profile production ps
