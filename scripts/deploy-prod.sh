@@ -36,8 +36,19 @@ say "Depo: $(pwd)"
 say "Calisma agaci durumu"
 git status --short || true
 
-if [ -n "$(git status --porcelain)" ] && [ "${1:-}" != "--force" ]; then
-  die "Calisma agacinda commit edilmemis degisiklik var. Once commit/stash edin ya da --force ile devam edin (yerel degisiklikler SILINIR)."
+# DIKKAT: burada yalnizca IZLENEN dosyalardaki degisiklikler engelleyici.
+# Izlenmeyen dosya/klasorler `git reset --hard` tarafindan SILINMEZ; bu yuzden
+# (orn. sunucuda kalmis eski bir `axis3/` kopyasi) deploy'u kilitlememeli.
+TRACKED_DIRTY=$(git status --porcelain --untracked-files=no || true)
+UNTRACKED=$(git status --porcelain --untracked-files=normal | grep '^??' || true)
+
+if [ -n "$UNTRACKED" ]; then
+  echo "not: izlenmeyen dosyalar korunacak (dokunulmuyor):"
+  printf '     %s\n' $UNTRACKED
+fi
+
+if [ -n "$TRACKED_DIRTY" ] && [ "${1:-}" != "--force" ]; then
+  die "Izlenen dosyalarda commit edilmemis degisiklik var (yukarida ' M ...' satirlari). Once commit/stash edin ya da --force ile devam edin (bu degisiklikler SILINIR)."
 fi
 
 say "origin/$BRANCH guncelleniyor"
@@ -62,12 +73,15 @@ for c in $HOLDERS; do
 done
 
 say "Uretim imaji insa ediliyor (birkac dakika surer; 1 saniyede bitiyorsa cache'e takilmistir)"
+docker image inspect -f 'onceki app-prod imaji: {{.Created}}' axis3-app-prod:latest 2>/dev/null || echo "onceki app-prod imaji: yok"
 BUILD_START=$(date +%s)
 docker compose --profile production build "$SERVICE"
 echo "insa suresi: $(( $(date +%s) - BUILD_START )) sn"
 
-say "Servisler baslatiliyor"
-docker compose --profile production up -d "$SERVICE"
+say "Servisler baslatiliyor (yeni imaj zorla devreye alinir)"
+docker compose --profile production up -d --force-recreate "$SERVICE"
+echo "konteyner imaj id: $(docker inspect -f '{{.Image}}' "$CONTAINER" 2>/dev/null || echo '?')"
+echo "konteynerin imaji: $(docker image inspect -f '{{.Created}}' "$(docker inspect -f '{{.Image}}' "$CONTAINER" 2>/dev/null)" 2>/dev/null || echo '?')"
 
 say "Saglik kontrolu bekleniyor"
 HEALTH="unknown"
