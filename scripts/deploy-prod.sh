@@ -94,10 +94,16 @@ echo "saglik: $HEALTH"
 [ "$HEALTH" = "healthy" ] || die "Konteyner saglikli olmadi. Loglar: docker compose --profile production logs --tail=100 $SERVICE"
 
 say "YENI KOD IMAJDA MI? (asil dogrulama)"
-if docker exec "$CONTAINER" sh -c "grep -rl '$MARKER' /app/.next 2>/dev/null | head -3" | grep -q .; then
+# NOT: `... | grep -q` KULLANILMAZ. grep -q ilk satirda cikip boruyu kapatinca
+# docker exec SIGPIPE alir; `set -o pipefail` yuzunden boru hatali sayilir ve
+# kod imajda OLSA BILE kontrol "bulunamadi" der. Cikti degiskene alinir.
+FOUND=$(docker exec "$CONTAINER" sh -c "grep -rl '$MARKER' /app/.next 2>/dev/null | head -5" || true)
+if [ -n "$FOUND" ]; then
   echo "OK - '$MARKER' imajin icinde bulundu; yeni kod yayinda."
+  printf '     %s\n' $FOUND
 else
   echo "BASARISIZ - '$MARKER' imajda YOK. Build cache'e takildi ya da git guncellenmedi." >&2
+  echo "Konteynerdeki imaj: $(docker inspect -f '{{.Image}}' "$CONTAINER" 2>/dev/null)" >&2
   echo "Tekrar deneyin: docker compose --profile production build --no-cache $SERVICE && docker compose --profile production up -d $SERVICE" >&2
   exit 2
 fi
