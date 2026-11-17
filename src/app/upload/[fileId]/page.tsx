@@ -141,22 +141,16 @@ export default function UploadDetailPage() {
     let preorderDiscount: number | null = null;
     let restockDays: number | undefined;
     try {
-      const materialAvail = await inventoryService.checkMaterialAvailability(
+      // Renk HER ZAMAN gonderilir. Onceki kod, renk listede yoksa renk-bagimsiz
+      // kontrole dusuyordu; o kontrol tum renklerin stogunu topladigi icin
+      // "stok var" diyor, ama siparis aninda SQL tam renk eslesmesi aradigi
+      // icin `"<dosya>.stl" icin stok tukendi` (409) aliniyordu.
+      const availability = await inventoryService.checkMaterialAvailability(
         selectedMaterial.id,
-        undefined,
+        selectedColor || undefined,
         selectedNozzle?.id,
         selectedMaterial.technology
       );
-
-      const knownColor = inventoryColors.find((c) => c.color === selectedColor);
-      const availability = knownColor
-        ? await inventoryService.checkMaterialAvailability(
-            selectedMaterial.id,
-            selectedColor,
-            selectedNozzle?.id,
-            selectedMaterial.technology
-          )
-        : materialAvail;
 
       // Preorder is needed only when the requested quantity cannot be covered.
       if (availability.stockCount < quantity) {
@@ -174,10 +168,7 @@ export default function UploadDetailPage() {
         }
 
         isPreorderItem = true;
-        preorderDiscount =
-          availability.preorderDiscountPercent ??
-          materialAvail.preorderDiscountPercent ??
-          null;
+        preorderDiscount = availability.preorderDiscountPercent ?? null;
         restockDays = availability.estimatedRestockDays ?? 14;
       }
     } catch { toast.error('Stok kontrolü başarısız'); setCheckingInventory(false); return; }
@@ -348,22 +339,16 @@ export default function UploadDetailPage() {
 
       try {
         // Availability must be colour- and quantity-aware: the same rule the
-        // server applies when it creates the order.
-        const materialAvail = await inventoryService.checkMaterialAvailability(
+        // server applies when it creates the order. Renk HER ZAMAN gonderilir;
+        // renk-bagimsiz kontrol tum renklerin stogunu topladigi icin, envanter
+        // satiri olmayan bir rengi stokta gibi gosterip siparisi 409'a
+        // dusuruyordu.
+        const availability = await inventoryService.checkMaterialAvailability(
           selectedMaterial.id,
-          undefined,
+          selectedColor || undefined,
           selectedNozzle?.id,
           selectedMaterial.technology
         );
-        const knownColor = inventoryColors.find((c) => c.color === selectedColor);
-        const availability = knownColor
-          ? await inventoryService.checkMaterialAvailability(
-              selectedMaterial.id,
-              selectedColor,
-              selectedNozzle?.id,
-              selectedMaterial.technology
-            )
-          : materialAvail;
 
         if (cancelled) return;
 

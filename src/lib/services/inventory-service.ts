@@ -1,4 +1,5 @@
 import { createClient } from '@/lib/supabase/client';
+import { inventoryDeductionArgs } from '@/lib/services/stock-allocation';
 
 export interface NozzleSize {
   id: string;
@@ -311,6 +312,15 @@ class InventoryService {
     let preorderDiscountPercent: number | null = null;
     let estimatedRestockDays = 14;
 
+    // Siparis aninda stogu dusen SQL fonksiyonu `color = p_color` ile TAM
+    // eslesme arar (`deduct_inventory_stock`, migration 093/094). On kontrol
+    // ayni kurala uymak ZORUNDA: rengin satiri yoksa diger renklerin stogu
+    // sayilirsa ekranda "Stokta mevcut" yazar, siparis ise
+    // `"<dosya>.stl" icin stok tukendi` (409) ile duser.
+    const rowCanPreorder = items.some(
+      (item) => item.allow_preorder ?? materialPreorderAllowed
+    );
+
     if (color) {
       const colorInfo = colorMap.get(color);
       if (colorInfo) {
@@ -319,8 +329,16 @@ class InventoryService {
         preorderDiscountPercent = colorInfo.preorderDiscount;
         estimatedRestockDays = colorInfo.restock;
       } else {
-        canPreorder = materialPreorderAllowed;
+        // Renk icin envanter satiri yok → o renkten stok YOK. On siparis izni
+        // malzeme genelinden veya baska bir renk satirindan gelebilir; sunucu
+        // da ayni sekilde degerlendiriyor.
+        stockCount = 0;
+        canPreorder = materialPreorderAllowed || rowCanPreorder;
         preorderDiscountPercent = materialPreorderDiscount;
+        const rowRestock = items
+          .map((item) => Number(item.estimated_restock_days))
+          .find((value) => Number.isFinite(value) && value > 0);
+        if (rowRestock) estimatedRestockDays = rowRestock;
       }
     } else {
       for (const [, info] of colorMap) {
@@ -351,7 +369,7 @@ class InventoryService {
     };
   }
 
-  async deductStock(materialId: string, color: string, quantity: number, nozzleSizeId?: string, technology?: 'FDM' | 'SLA'): Promise<void> {
+  async deductStock(materialId: string, color: string, quantity: number, _nozzleSizeId?: string, technology?: 'FDM' | 'SLA'): Promise<void> {
     if (!technology) {
       const { data: mat } = await ((this.supabase
         .from('materials') as any)
@@ -362,11 +380,10 @@ class InventoryService {
     }
 
     const { data, error } = await (this.supabase.rpc as any)('deduct_inventory_stock', {
-      p_material_id: materialId,
-      p_color: color,
-      p_quantity: quantity,
-      p_nozzle_size_id: nozzleSizeId || null,
-      p_technology: technology,
+      // Envanter satirlari malzeme+renk kovasidir; nozzle_size_id onlarda
+      // NULL'dir. Nozul kimligi gondermek SQL'deki tam eslesme filtresi
+      // yuzunden hicbir satiri eslestirmez (stok dolu olsa bile "short").
+      ...inventoryDeductionArgs({ materialId, color, quantity, technology }),
     });
 
     if (error) {

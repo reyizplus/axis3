@@ -20,6 +20,11 @@ import type { PriceBreakdown as EngineBreakdown } from '@/lib/pricing/types';
 import { calculateOrderTotals, hasPriceDrift } from '@/lib/services/order-totals';
 import type { PriceChangeDetails } from '@/lib/services/order-totals';
 import {
+  claimStock,
+  inventoryDeductionArgs,
+  stockGroupKey,
+} from '@/lib/services/stock-allocation';
+import {
   COUPON_UNAVAILABLE_MESSAGE,
   checkCoupon,
   couponFailureStatus,
@@ -295,10 +300,6 @@ const CUSTOM_INFILL_MAX = 100;
 const CUSTOM_TIME_MULTIPLIER_MIN = 0.5;
 const CUSTOM_TIME_MULTIPLIER_MAX = 2;
 
-function normalizeColor(color: string | null | undefined): string {
-  return String(color || '').trim().toLocaleLowerCase('tr-TR');
-}
-
 function assertRange(value: number, min: number, max: number, label: string) {
   if (!Number.isFinite(value) || value < min || value > max) {
     throw new OrderCreationError(
@@ -368,12 +369,18 @@ async function resolvePrintSettings(
 /**
  * Resolve preorder state from inventory. The discount is never taken from the
  * client; it comes from the inventory row, the material or the global default.
+ *
+ * `claims` sepetin tamamindaki talebi takip eder: ayni malzeme+renkten birden
+ * fazla kalem varsa stok kalem kalem degil, sirayla paylastirilir. Aksi halde
+ * iki kalem de "stok var" der, ikincisi stok dusme adiminda patlar ve siparis
+ * `stok tukendi` (409) ile sonsuza kadar tekrarlanir.
  */
 async function resolvePreorder(
   supabase: ReturnType<typeof createServiceClient>,
   params: {
     material: {
       id: string;
+      name?: string | null;
       technology: 'FDM' | 'SLA';
       preorder_allowed?: boolean | null;
       preorder_discount_percent?: number | null;
@@ -382,6 +389,7 @@ async function resolvePreorder(
     quantity: number;
     preorderEnabled: boolean;
     defaultDiscount: number;
+    claims: Map<string, number>;
   }
 ): Promise<{ isPreorder: boolean; discountPercent: number | null; restockDays: number | null }> {
   const inventoryType = params.material.technology === 'SLA' ? 'resin' : 'filament';
@@ -400,19 +408,27 @@ async function resolvePreorder(
     estimated_restock_days: number | null;
   }[];
 
-  const requestedColor = normalizeColor(params.color);
+  // Renk karsilastirmasi SQL ile BIREBIR ayni olmali: `deduct_inventory_stock`
+  // `color = p_color` (tam eslesme, buyuk/kucuk harf duyarli) ariyor. Burada
+  // normalize edip daha "comert" davranmak, stokta olmayan bir rengi stokta
+  // gibi gosterip siparisi `"<dosya>.stl" icin stok tukendi` (409) ile
+  // dusuruyordu. Renk acikca istendiyse BASKA renklerin stogu da kullanilamaz:
+  // "Mavi" siparisi "Siyah" filamentle basilamaz.
+  const requestedColor = params.color && params.color.length > 0 ? params.color : null;
   const colorRows = requestedColor
-    ? rows.filter((row) => normalizeColor(row.color) === requestedColor)
+    ? rows.filter((row) => row.color === requestedColor)
     : [];
-  const hasColorRows = colorRows.length > 0;
-  const relevantRows = hasColorRows ? colorRows : rows;
+  const relevantRows = requestedColor ? colorRows : rows;
 
   const stock = relevantRows.reduce(
     (sum, row) => sum + Math.max(0, Number(row.quantity_on_hand) || 0),
     0
   );
 
-  if (stock >= params.quantity) {
+  // Ayni malzeme+renk grubundan once gelen kalemler stogu onceden alir.
+  const groupKey = stockGroupKey(params.material.id, requestedColor, !!requestedColor);
+
+  if (claimStock(params.claims, groupKey, stock, params.quantity)) {
     return { isPreorder: false, discountPercent: null, restockDays: null };
   }
 
@@ -430,18 +446,24 @@ async function resolvePreorder(
     firstFinite([params.material.preorder_discount_percent]) ??
     params.defaultDiscount;
 
+  // Preorder izni renk satirina bagli DEGILDIR: istenen renk icin envanter
+  // satiri yoksa bile malzeme veya BASKA bir renk satiri on siparise izin
+  // veriyorsa siparis on siparise dusebilmelidir. Aksi halde "stokta olmayan
+  // renk" sessizce "siparis edilemez" haline geliyordu.
   const allowed =
     params.material.preorder_allowed === true ||
-    relevantRows.some((row) => row.allow_preorder === true);
+    rows.some((row) => row.allow_preorder === true);
 
   if (!params.preorderEnabled || !allowed) {
+    const materialName = params.material.name || params.material.id;
     throw new OrderCreationError(
-      `"${params.material.id}" için yeterli stok yok ve ön sipariş kapalı.`,
+      `${materialName} için yeterli stok yok ve ön sipariş kapalı.`,
       409
     );
   }
 
-  const restockDays = relevantRows
+  // Tedarik suresi once renk satirindan, yoksa malzemenin diger satirlarindan.
+  const restockDays = [...relevantRows, ...rows]
     .map((row) => Number(row.estimated_restock_days))
     .find((value) => Number.isFinite(value) && value > 0);
 
@@ -529,6 +551,8 @@ export async function createOrder(input: CreateOrderInput): Promise<CreatedOrder
   const resolvedItems: ResolvedItem[] = [];
   const resolvedStoreItems: ResolvedStoreItem[] = [];
   const engine = new PricingEngine(supabase);
+  // Sepet genelinde stok talebi (malzeme+renk gruplari) — bkz. resolvePreorder
+  const stockClaims = new Map<string, number>();
 
   // ---------- 3D print items ----------
   for (const item of items) {
@@ -617,17 +641,25 @@ export async function createOrder(input: CreateOrderInput): Promise<CreatedOrder
       });
     }
 
+    // Tek bir renk degeri kullanilir: on kontrol, fiyat motoru ve stok dusme
+    // adimi AYNI renkle calismali. Onceki kod on kontrole `null`, stok dusmeye
+    // `'Natural'` gonderiyordu; ikisi ayrisinca stok "var" gorunup siparis
+    // 409 ile dusebiliyordu.
+    const resolvedColor = item.color || 'Natural';
+
     const preorder = await resolvePreorder(supabase, {
       material: {
         id: material.id,
+        name: material.name,
         technology,
         preorder_allowed: material.preorder_allowed,
         preorder_discount_percent: material.preorder_discount_percent,
       },
-      color: item.color || null,
+      color: resolvedColor,
       quantity,
       preorderEnabled: settings.preorderEnabled,
       defaultDiscount: settings.defaultPreorderDiscount,
+      claims: stockClaims,
     });
 
     const result = await engine.calculatePrice({
@@ -638,7 +670,7 @@ export async function createOrder(input: CreateOrderInput): Promise<CreatedOrder
       technology,
       quantity,
       useGCodeAnalysis: true,
-      color: item.color || 'Natural',
+      color: resolvedColor,
       nozzleSizeMm: item.nozzleSizeMm ?? undefined,
       timeMultiplier: printSettings.timeMultiplier,
       infillPercentage: printSettings.infillPercentage,
@@ -677,7 +709,7 @@ export async function createOrder(input: CreateOrderInput): Promise<CreatedOrder
       totalEstimatedHours:
         result.estimatedTime.totalOrderHours ??
         result.estimatedTime.correctedTimeHours * quantity,
-      color: item.color || 'Natural',
+      color: resolvedColor,
       nozzleSizeId: item.nozzleSizeId ?? null,
       nozzleSizeMm: item.nozzleSizeMm ?? null,
       supportEnabled: item.supportEnabled !== false,
@@ -997,24 +1029,23 @@ export async function createOrder(input: CreateOrderInput): Promise<CreatedOrder
       if (item.isPreorder) continue;
 
       let { data, error } = await (supabase.rpc as any)('deduct_inventory_stock', {
-        p_material_id: item.materialId,
-        p_color: item.color,
-        p_quantity: item.quantity,
-        p_nozzle_size_id: item.nozzleSizeId,
-        p_technology: item.technology,
-        p_order_id: order.id,
-        p_order_item_id: item.id,
+        // Filament/resin tuketimi nozuldan BAGIMSIZDIR: envanter satirlari
+        // malzeme + renk kovasidir ve `nozzle_size_id` onlarda NULL'dir.
+        // Kalemin nozul kimligini gondermek SQL'deki tam eslesme filtresi
+        // (`nozzle_size_id = p_nozzle_size_id`) yuzunden hicbir satiri
+        // eslestirmiyordu: stok dolu olsa bile `short` donuyor, siparis
+        // `"<dosya>.stl" icin stok tukendi` (409) ile dusuyordu.
+        ...inventoryDeductionArgs(item, {
+          orderId: order.id,
+          orderItemId: item.id,
+        }),
       });
 
       // Migration 093 not applied yet: retry with the legacy signature so
       // checkout keeps working (stock is then restored without a ledger).
       if (error && isMissingFunctionError(error, 'deduct_inventory_stock')) {
         ({ data, error } = await (supabase.rpc as any)('deduct_inventory_stock', {
-          p_material_id: item.materialId,
-          p_color: item.color,
-          p_quantity: item.quantity,
-          p_nozzle_size_id: item.nozzleSizeId,
-          p_technology: item.technology,
+          ...inventoryDeductionArgs(item),
         }));
       }
 
