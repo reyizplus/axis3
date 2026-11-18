@@ -720,7 +720,7 @@ export default function UploadDetailPage() {
                     <div>
                       <p className="font-medium text-sm">Destek Yapıları</p>
                       <p className="text-xs text-muted-foreground">
-                        Çıkıntılar için geçici destek basılır. Kapatırsanız destek gramı ve destek ayıklama işçiliği fiyata girmez.
+                        Çıkıntılar için geçici destek basılır. Desteği kapattığınızda, modelinizin geometrisinden kaynaklı baskı hatalarının sorumluluğunu üstlenmiş olursunuz. Desteksiz baskı kaynaklı kusurlarda sorumluluk kullanıcıya aittir.
                       </p>
                     </div>
                   </div>
