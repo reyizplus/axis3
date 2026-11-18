@@ -5,23 +5,26 @@
 # Yaptigi isler:
 #   1) depoyu origin/main ile esitler (kirli calisma agaci varsa durur)
 #   2) port 3000'i tutan dev konteynerini durdurur
-#   3) app-prod imajini yeniden insa eder ve baslatir
-#   4) YENI KODUN IMAJDA OLDUGUNU konteyner icinde grep ile dogrular
+#   3) slicer'i saglikli hale getirir (Once bu: app-prod bunsuz baslamaz)
+#   4) app-prod imajini yeniden insa eder ve baslatir
+#   5) YENI KODUN IMAJDA OLDUGUNU konteyner icinde GIT_SHA ile dogrular
+#   6) /api/health `build` = GIT_SHA ve app-prod -> slicer erisimini dogrular
 #
 # Kullanim:
 #   bash scripts/deploy-prod.sh            # temiz agac sart
 #   bash scripts/deploy-prod.sh --force    # yerel degisiklikleri silerek devam et
 #
-# Not: Dogrulama adimi kritiktir. Cloudflare varsayilan HSTS basligini
-# (max-age=15552000) dondurdugu icin basliklardan surum anlasilmaz; tek
-# guvenilir kanit imajin icindeki kod parcasidir.
+# Not: Dogrulama adimlari FATAL'dir. "Deploy basarili" deyip eski imaji
+# birakmak (veya slicer'i olu birakmak) bu projede en pahali hata oldu.
 
 set -euo pipefail
 
 BRANCH="main"
 SERVICE="app-prod"
 CONTAINER="axis3-app-prod"
-# Bu dizge sadece e7b8dca ve sonrasi build'lerde bulunur (checkout 409 akisi).
+SLICER_CONTAINER="axis3-slicer"
+# Eski kontrol: imajda e7b8dca ve sonrasinda bulunan bir dizge. Artik asil
+# dogrulama /api/health icindeki `build` alani ve imaja gomulen GIT_SHA.
 MARKER="coupon_invalid"
 
 say() { printf '\n=== %s\n' "$*"; }
@@ -72,6 +75,44 @@ for c in $HOLDERS; do
   docker stop "$c" >/dev/null
 done
 
+# ---------------------------------------------------------------
+# DILIMLEYICI KAPISI (build'den ONCE)
+# app-prod, `depends_on: slicer: service_healthy` ile basliyor. Slicer
+# bozuksa `up app-prod` hata verir. Bu yuzden once slicer ayaga kaldirilir,
+# saglikli olmazsa HICBIR SEY insa edilmeden durulur: 5 dakikalik build'i
+# bosa harcamayalim ve calisan siteye dokunmayalim.
+# ---------------------------------------------------------------
+say "Dilimleyici (slicer) hazir mi?"
+slicer_health() {
+  docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$SLICER_CONTAINER" 2>/dev/null || echo missing
+}
+echo "slicer durumu: $(docker inspect -f '{{.State.Status}} / restart {{.RestartCount}} / exit {{.State.ExitCode}}' "$SLICER_CONTAINER" 2>/dev/null || echo missing)"
+
+if [ "$(slicer_health)" != "healthy" ]; then
+  echo "slicer saglikli degil; yeniden olusturuluyor"
+  docker compose --profile production up -d --force-recreate slicer \
+    || die "slicer baslatilamadi. Loglar: docker compose --profile production logs --tail=120 slicer"
+fi
+
+SLICER_HEALTH="unknown"
+for _ in $(seq 1 40); do
+  SLICER_HEALTH=$(slicer_health)
+  [ "$SLICER_HEALTH" = "healthy" ] && break
+  sleep 3
+done
+echo "slicer saglik: $SLICER_HEALTH"
+
+if [ "$SLICER_HEALTH" != "healthy" ]; then
+  # Teshis: konteyner ici ve app-prod -> slicer yolu ayri ayri denenir.
+  echo "--- slicer loglari (son 60) ---" >&2
+  docker compose --profile production logs --tail=60 slicer >&2 || true
+  echo "--- slicer konteyner ici /health ---" >&2
+  docker exec "$SLICER_CONTAINER" node -e "fetch('http://127.0.0.1:8000/health').then(r=>r.text()).then(t=>console.log('IC',r.status,t)).catch(e=>console.log('IC HATA',e.message))" >&2 || true
+  echo "--- app-prod -> slicer /health ---" >&2
+  docker exec "$CONTAINER" node -e "fetch('http://slicer:8000/health').then(r=>r.text()).then(t=>console.log('APP',r.status,t)).catch(e=>console.log('APP HATA',e.message))" >&2 || true
+  die "Dilimleyici saglikli olmadan deploy tamamlanmaz (hicbir sey insa edilmedi, site eski imajla ayakta). Onarim: docker compose --profile production build --no-cache slicer && docker compose --profile production up -d --force-recreate slicer"
+fi
+
 say "Uretim imaji insa ediliyor (birkac dakika surer; 1 saniyede bitiyorsa cache'e takilmistir)"
 docker image inspect -f 'onceki app-prod imaji: {{.Created}}' axis3-app-prod:latest 2>/dev/null || echo "onceki app-prod imaji: yok"
 BUILD_START=$(date +%s)
@@ -93,29 +134,45 @@ done
 echo "saglik: $HEALTH"
 [ "$HEALTH" = "healthy" ] || die "Konteyner saglikli olmadi. Loglar: docker compose --profile production logs --tail=100 $SERVICE"
 
-say "YENI KOD IMAJDA MI? (asil dogrulama)"
+say "YENI KOD IMAJDA MI? (imaj ici kanit)"
 # NOT: `... | grep -q` KULLANILMAZ. grep -q ilk satirda cikip boruyu kapatinca
 # docker exec SIGPIPE alir; `set -o pipefail` yuzunden boru hatali sayilir ve
 # kod imajda OLSA BILE kontrol "bulunamadi" der. Cikti degiskene alinir.
-FOUND=$(docker exec "$CONTAINER" sh -c "grep -rl '$MARKER' /app/.next 2>/dev/null | head -5" || true)
+# GIT_SHA derleme aninda NEXT_PUBLIC_BUILD_SHA olarak paketlere gomulur.
+FOUND=$(docker exec "$CONTAINER" sh -c "grep -rl '$GIT_SHA' /app/.next 2>/dev/null | head -5" || true)
 if [ -n "$FOUND" ]; then
-  echo "OK - '$MARKER' imajin icinde bulundu; yeni kod yayinda."
+  echo "OK - $GIT_SHA imajin icindeki derlemeye gomulmus; yeni kod yayinda."
   printf '     %s\n' $FOUND
 else
-  echo "BASARISIZ - '$MARKER' imajda YOK. Build cache'e takildi ya da git guncellenmedi." >&2
-  echo "Konteynerdeki imaj: $(docker inspect -f '{{.Image}}' "$CONTAINER" 2>/dev/null)" >&2
-  echo "Tekrar deneyin: docker compose --profile production build --no-cache $SERVICE && docker compose --profile production up -d $SERVICE" >&2
-  exit 2
+  echo "UYARI - $GIT_SHA imajda bulunamadi; kesin karar /api/health kontrolunde verilecek." >&2
+  FALLBACK=$(docker exec "$CONTAINER" sh -c "grep -rl '$MARKER' /app/.next 2>/dev/null | head -3" || true)
+  [ -n "$FALLBACK" ] && printf '     (eski isaret bulundu: %s)\n' $FALLBACK >&2
 fi
 
 say "Canli kontrol"
+# /api/health, imaja gomulen build etiketini doner. BURASI FATAL: "deploy
+# basarili" deyip eski imaji birakmak, bu projede yasanan en pahali hata.
 HEALTH_JSON=$(curl -fsS http://127.0.0.1:3000/api/health || true)
 printf '%s\n' "$HEALTH_JSON"
 if printf '%s' "$HEALTH_JSON" | grep -q "\"build\":\"$GIT_SHA\""; then
   echo "OK - /api/health build=$GIT_SHA (yayindaki surum bu commit)"
 else
-  echo "UYARI - /api/health icinde build=$GIT_SHA gorunmuyor. Eski imaj ayakta olabilir." >&2
-  echo "        Uygulama eski imajla derlendiyse: docker compose --profile production up -d --force-recreate $SERVICE" >&2
+  echo "BASARISIZ - yayindaki surum $GIT_SHA degil." >&2
+  echo "        build arg imaja gecmemis olabilir. Tekrar deneyin:" >&2
+  echo "        docker compose --profile production build --no-cache $SERVICE && docker compose --profile production up -d --force-recreate $SERVICE" >&2
+  exit 3
+fi
+
+say "Uygulama dilimleyiciye ulasiyor mu?"
+# Fiyat ve siparis akisi bu yol olmadan calismaz (PRICING_REQUIRE_SLICING=true).
+DEEP_JSON=$(curl -fsS 'http://127.0.0.1:3000/api/health?deep=1' || true)
+printf '%s\n' "$DEEP_JSON"
+if printf '%s' "$DEEP_JSON" | grep -q '"ok":true'; then
+  echo "OK - app-prod -> slicer saglikli."
+else
+  echo "BASARISIZ - uygulama dilimleyiciye ULASAMIYOR (fiyat/siparis 503 doner)." >&2
+  docker compose --profile production logs --tail=40 slicer >&2 || true
+  exit 4
 fi
 
 say "Durum"
