@@ -39,12 +39,21 @@ import {
 } from 'lucide-react';
 import { AccordionItem } from '@/components/ui/accordion';
 import { Dialog3DViewer } from '@/components/ui/dialog-3d-viewer';
+import { sliceSelectionFromOrderItem } from '@/lib/preview/order-item-selection';
 
 interface OrderItem {
   id: string;
   file_id: string;
   filename: string;
+  material_id?: string;
   material_name: string;
+  /**
+   * Malzemenin teknolojisi (`FDM` | `SLA`). Sipariş kaleminde saklanmaz,
+   * `materials` tablosundan yüklenir; reçine kalemlerinde takım yolu
+   * önizlemesi istenmesin diye gerekli.
+   */
+  material_technology?: string | null;
+  print_setting_id?: string | null;
   print_setting_name: string;
   quantity: number;
   unit_price: number;
@@ -52,6 +61,7 @@ interface OrderItem {
   color?: string;
   nozzle_size_id?: string;
   nozzle_size_mm?: number;
+  support_enabled?: boolean | null;
   custom_layer_height?: number;
   custom_infill_percentage?: number;
   custom_time_multiplier?: number;
@@ -348,9 +358,24 @@ export default function OrderDetailPage() {
         .select('id, original_filename, file_size, volume_cm3, surface_area_cm2, bounding_box_x, bounding_box_y, bounding_box_z, triangle_count, storage_path')
         .in('id', fileIds);
 
+      // Takım yolu önizlemesi için malzemenin teknolojisi gerekir: SLA'da
+      // dilimleme isteği hiç gönderilmez (reçinede takım yolu yoktur).
+      const materialIds = Array.from(
+        new Set<string>(
+          (itemsData || [])
+            .map((item: any) => (typeof item.material_id === 'string' ? item.material_id : ''))
+            .filter((id: string) => id.length > 0)
+        )
+      );
+      const { data: materialsData } = materialIds.length
+        ? await supabase.from('materials').select('id, technology').in('id', materialIds)
+        : { data: [] as Array<{ id: string; technology: string | null }> };
+
       const itemsWithFiles = (itemsData || []).map((item: any) => ({
         ...item,
         file_details: filesData?.find((f: any) => f.id === item.file_id),
+        material_technology:
+          materialsData?.find((m: any) => m.id === item.material_id)?.technology ?? null,
       }));
 
       setOrder({
@@ -933,6 +958,9 @@ export default function OrderDetailPage() {
             color={selectedItem.color}
             materialName={selectedItem.material_name}
             printSettingName={selectedItem.print_setting_name}
+            /* Sipariş kalemindeki GERÇEK seçimler: önizleme, fiyatlanan profile
+               birebir aynı hash'i üretmeli (bkz. lib/preview/order-item-selection). */
+            slice={sliceSelectionFromOrderItem(selectedItem)}
             specifications={selectedItem.file_details ? {
               volume: selectedItem.file_details.volume_cm3,
               surfaceArea: selectedItem.file_details.surface_area_cm2,

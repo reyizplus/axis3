@@ -16,6 +16,20 @@ export interface SlicePreviewSelection {
 /** Önizleme yükleme durumu. `ready` dışındaki her durumda STL gösterilir. */
 export type PreviewStatus = 'idle' | 'loading' | 'ready' | 'fallback';
 
+/**
+ * `order_items.custom_time_multiplier` (2 = iki kat yavaş) → dilimleyicinin
+ * beklediği hız çarpanı (2 = iki kat hızlı). Tek dönüşüm noktası burasıdır;
+ * sunucu (fiyat/sipariş) ve arayüz (önizleme) aynı fonksiyonu kullanır ki
+ * profil hash'i ayrışmasın. Geçersiz/verilmemiş değer "normal hız" demektir.
+ */
+export function speedMultiplierFromTimeMultiplier(
+  timeMultiplier: number | null | undefined
+): number {
+  const value = Number(timeMultiplier);
+  if (!Number.isFinite(value) || value <= 0) return 1;
+  return 1 / value;
+}
+
 /** G-Code ayar bloğundaki anahtarların Türkçe karşılıkları. */
 export const CONFIG_LABELS: Record<string, string> = {
   layer_height: 'Katman yüksekliği',

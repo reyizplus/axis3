@@ -64,16 +64,10 @@ export const SPEED_MULTIPLIER_MAX = 2;
 
 /**
  * İstemci `customTimeMultiplier` gönderiyor (2 = iki kat yavaş), dilimleyici ise
- * `speedMultiplier` bekliyor (2 = iki kat hızlı). Tek dönüşüm noktası burasıdır:
- * rota ve sipariş servisi aynı fonksiyonu kullanır ki hash ayrışmasın.
+ * `speedMultiplier` bekliyor (2 = iki kat hızlı). Dönüşüm `lib/preview/selection`
+ * içinde tanımlıdır: arayüz önizlemesi de aynı fonksiyonu kullanır.
  */
-export function speedMultiplierFromTimeMultiplier(
-  timeMultiplier: number | null | undefined
-): number {
-  const value = Number(timeMultiplier);
-  if (!Number.isFinite(value) || value <= 0) return 1;
-  return 1 / value;
-}
+export { speedMultiplierFromTimeMultiplier } from '@/lib/preview/selection';
 
 /** Supabase zincirini tiplerden bağımsız çözmek için küçük yardımcı. */
 async function selectOne(
