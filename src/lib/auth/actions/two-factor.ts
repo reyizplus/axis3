@@ -105,10 +105,14 @@ export async function verify2FACode(email: string, code: string): Promise<AuthRe
   try {
     const serviceClient = createServiceClient();
 
+    // `signIn` kodu normalize edilmiş e-posta ile yazar; burada da aynı
+    // normalizasyon kullanılmazsa büyük harf içeren adreslerde kod bulunamaz.
+    const normalizedEmail = email.toLowerCase().trim();
+
     const { data: verification } = await serviceClient
       .from('verification_codes')
       .select('*')
-      .eq('email', email.toLowerCase())
+      .eq('email', normalizedEmail)
       .eq('type', '2fa_email')
       .is('used_at', null)
       .gt('expires_at', new Date().toISOString())
@@ -131,7 +135,7 @@ export async function verify2FACode(email: string, code: string): Promise<AuthRe
       return { success: false, error: 'Çok fazla yanlış deneme. Lütfen tekrar giriş yapın.' };
     }
 
-    if (!matchesVerificationCode(code, email, verification.code_hash)) {
+    if (!matchesVerificationCode(code, normalizedEmail, verification.code_hash)) {
       const attempts = (verification.attempts ?? 0) + 1;
 
       await serviceClient
@@ -139,7 +143,7 @@ export async function verify2FACode(email: string, code: string): Promise<AuthRe
         .update({ attempts })
         .eq('id', verification.id);
 
-      await logAuthEvent('TWO_FACTOR_FAILURE', verification.user_id, email);
+      await logAuthEvent('TWO_FACTOR_FAILURE', verification.user_id, normalizedEmail);
 
       const remaining = MAX_2FA_ATTEMPTS - attempts;
 
@@ -158,7 +162,7 @@ export async function verify2FACode(email: string, code: string): Promise<AuthRe
     const { data: pending } = await serviceClient
       .from('pending_2fa_sessions')
       .select('*')
-      .eq('email', email.toLowerCase())
+      .eq('email', normalizedEmail)
       .gt('expires_at', new Date().toISOString())
       .order('created_at', { ascending: false })
       .limit(1)
@@ -172,7 +176,7 @@ export async function verify2FACode(email: string, code: string): Promise<AuthRe
     const supabase = await createClient();
 
     const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
-      email: email.toLowerCase(),
+      email: normalizedEmail,
       password,
     });
 
@@ -184,7 +188,7 @@ export async function verify2FACode(email: string, code: string): Promise<AuthRe
       .delete()
       .eq('id', pending.id);
 
-    await logAuthEvent('TWO_FACTOR_VERIFY', authData.user.id, email);
+    await logAuthEvent('TWO_FACTOR_VERIFY', authData.user.id, normalizedEmail);
 
     return { success: true, message: 'Giriş başarılı' };
   } catch (error) {
@@ -339,7 +343,26 @@ export async function toggle2FA(enabled: boolean): Promise<AuthResult> {
     const supabase = await createClient();
 
     if (enabled) {
-      return { success: false, error: 'Önce TOTP kurulumu yapmalısınız' };
+      // Arayüzdeki 2FA, girişte e-posta ile gönderilen 6 haneli koddur.
+      // Önceden burada koşulsuz "Önce TOTP kurulumu yapmalısınız" dönülüyordu
+      // ve TOTP kurulumunu çağıran hiçbir ekran yoktu; yani 2FA'yı açmak
+      // imkânsızdı.
+      const { error: updateError } = await supabase.from('users')
+        .update({
+          two_factor_enabled: true,
+          two_factor_secret: null,
+          two_factor_recovery_codes: null,
+        })
+        .eq('id', user.id);
+
+      if (updateError) {
+        console.error('[toggle2FA] Update failed:', updateError);
+        return { success: false, error: '2FA ayarı güncellenemedi. Lütfen tekrar deneyin.' };
+      }
+
+      await logAuthEvent('TWO_FACTOR_ENABLE', user.id, user.email);
+
+      return { success: true, message: 'İki adımlı doğrulama etkinleştirildi' };
     }
 
     await supabase.from('users')

@@ -1,5 +1,6 @@
 import type { CartItem, Cart } from './types';
 import { isMissingColumnError } from '@/lib/supabase/errors';
+import { requestOrderQuote, toOrderItemInput } from './order-quote-client';
 
 export type { CartItem } from './types';
 
@@ -9,6 +10,8 @@ const CART_USER_KEY = 'axis3_cart_user';
 export class CartService {
   private syncInProgress = false;
   private pendingSync: (() => Promise<void>) | null = null;
+  /** Aynı anda birden fazla teklif isteği gitmesin. */
+  private repriceInFlight: Promise<CartItem[]> | null = null;
 
   private getStorageKey(userId?: string): string {
     if (!userId) {
@@ -70,6 +73,9 @@ export class CartService {
         }
         this.saveCart(cart);
         localStorage.removeItem(anonStorageKey);
+        // Anonim sepetten gelen adetler birleşti; birim fiyat adede bağlı
+        // olduğu için sunucudan tazelenmeli.
+        void this.repriceCart();
       }
 
       if (previousUserId && previousUserId !== userId) {
@@ -156,6 +162,14 @@ export class CartService {
 
     this.saveCart(cart);
     this.enqueueSync(() => this.syncCartToDb(cart));
+
+    // Birleştirme sonrası adet arttı: `birim × adet` yanlış olabilir (adet
+    // indirimi, satır başına bir kez alınan giderler). Sunucu fiyatını uygula.
+    if (existingIndex >= 0) {
+      await this.repriceCart();
+      return this.getCart().items.find((i) => i.id === newItem.id) ?? newItem;
+    }
+
     return newItem;
   }
 
@@ -177,10 +191,50 @@ export class CartService {
 
     if (item) {
       item.quantity = quantity;
+      // Geçici değer: sunucu teklifi gelene kadar sepet boş görünmesin.
+      // Asıl fiyat `repriceCart` ile yazılır (`birim × adet` yanlış olabilir).
       item.totalPrice = item.unitPrice * quantity;
       this.saveCart(cart);
       this.enqueueSync(() => this.syncCartToDb(cart));
+      await this.repriceCart();
     }
+  }
+
+  /**
+   * Sepetteki 3D kalemlerin birim/toplam fiyatlarını sunucudan tazeler.
+   *
+   * Sipariş oluşturma ile aynı fiyat otoritesini (`/orders/quote`) kullandığı
+   * için adet değişimi, birleştirme veya ayar güncellemesinden sonra sepet
+   * sunucunun kabul edeceği tutarı gösterir; `409 price_changed` oluşmaz.
+   */
+  async repriceCart(): Promise<CartItem[]> {
+    if (typeof window === 'undefined') return this.getCart().items;
+    if (this.repriceInFlight) return this.repriceInFlight;
+
+    const cart = this.getCart();
+    if (cart.items.length === 0) return cart.items;
+
+    this.repriceInFlight = (async () => {
+      try {
+        const { quote } = await requestOrderQuote({
+          items: cart.items.map(toOrderItemInput),
+          storeItems: [],
+        });
+
+        if (!quote || quote.items.length === 0) return this.getCart().items;
+
+        await this.applyServerPrices(quote.items);
+        return this.getCart().items;
+      } catch {
+        // Fiyat tazelenemedi (ağ/oturum). Sipariş anında sunucu yine kendi
+        // hesabını yapar; burada sepeti bozmuyoruz.
+        return this.getCart().items;
+      } finally {
+        this.repriceInFlight = null;
+      }
+    })();
+
+    return this.repriceInFlight;
   }
 
   /**
@@ -211,6 +265,19 @@ export class CartService {
       const item = cart.items[update.index];
       if (!item) continue;
 
+      const changed =
+        item.unitPrice !== update.unitPrice ||
+        item.totalPrice !== update.totalPrice ||
+        (typeof update.supportEnabled === 'boolean' &&
+          item.supportEnabled !== update.supportEnabled) ||
+        (typeof update.isPreorder === 'boolean' && item.isPreorder !== update.isPreorder) ||
+        (update.preorderDiscountPercent !== undefined &&
+          (item.preorderDiscountPercent ?? null) !== (update.preorderDiscountPercent ?? null)) ||
+        (update.estimatedRestockDays !== undefined &&
+          (item.estimatedRestockDays ?? undefined) !== (update.estimatedRestockDays ?? undefined));
+
+      if (!changed) continue;
+
       item.unitPrice = update.unitPrice;
       item.totalPrice = update.totalPrice;
       if (typeof update.supportEnabled === 'boolean') {
@@ -230,6 +297,9 @@ export class CartService {
 
     if (!applied) return false;
 
+    // Yalnızca gerçek bir değişiklikte yaz: `saveCart` `cart-updated` olayı
+    // yayar ve sepet sayfası bu olayda fiyat tazelemesini tekrar çalıştırır.
+    // Koşulsuz yazmak sonsuz döngü üretirdi.
     this.saveCart(cart);
     await this.syncCartToDb(cart);
     return true;

@@ -21,7 +21,12 @@ export async function signIn(formData: FormData): Promise<AuthResult<{ requiresT
     return { success: false, error: validated.error.issues[0].message };
   }
 
-  const { email, password } = validated.data;
+  // Tek normalizasyon noktası: aşağıda hem `verification_codes` hem de
+  // `pending_2fa_sessions` bu değerle yazılır ve okunur. Aksi halde
+  // "Ali@Example.com" ile yazılan kod, lowercase ile arayan doğrulama
+  // adımında asla bulunamıyordu.
+  const email = validated.data.email.trim().toLowerCase();
+  const password = validated.data.password;
 
   try {
     const rateCheck = await checkRateLimit(`login:${email}`, 'login');
@@ -60,23 +65,38 @@ export async function signIn(formData: FormData): Promise<AuthResult<{ requiresT
     return { success: false, error: 'E-posta veya şifre hatalı' };
   }
 
-  let serviceClient: ReturnType<typeof createServiceClient> | null = null;
+  // 2FA durumu okunamazsa girişe izin verilmez (fail-closed). Önceden servis
+  // istemcisi kurulamadığında `userProfile` null kalıyor ve 2FA sessizce
+  // atlanıyordu; bu, güvenlik katmanını tek bir env hatasıyla devre dışı
+  // bırakıyordu.
+  let serviceClient: ReturnType<typeof createServiceClient>;
   try {
     serviceClient = createServiceClient();
-  } catch {}
+  } catch (e) {
+    console.error('[signIn] service client unavailable:', e);
+    try { await supabase.auth.signOut(); } catch {}
+    return {
+      success: false,
+      error: 'Giriş şu anda yapılamıyor. Lütfen daha sonra tekrar deneyin.',
+    };
+  }
 
   let userProfile: { id: string; two_factor_enabled: boolean } | null = null;
-  if (serviceClient) {
-    try {
-      const { data } = await (serviceClient
-        .from('users')
-        .select('id, two_factor_enabled')
-        .eq('id', authData.user.id)
-        .maybeSingle() as unknown as Promise<{ data: { id: string; two_factor_enabled: boolean } | null; error: any }>);
-      userProfile = data;
-    } catch (e) {
-      console.error('[signIn] user profile query failed:', e);
-    }
+  try {
+    const { data, error } = await (serviceClient
+      .from('users')
+      .select('id, two_factor_enabled')
+      .eq('id', authData.user.id)
+      .maybeSingle() as unknown as Promise<{ data: { id: string; two_factor_enabled: boolean } | null; error: any }>);
+    if (error) throw error;
+    userProfile = data;
+  } catch (e) {
+    console.error('[signIn] user profile query failed:', e);
+    try { await supabase.auth.signOut(); } catch {}
+    return {
+      success: false,
+      error: 'Giriş şu anda yapılamıyor. Lütfen daha sonra tekrar deneyin.',
+    };
   }
 
   if (userProfile?.two_factor_enabled) {
@@ -89,10 +109,6 @@ export async function signIn(formData: FormData): Promise<AuthResult<{ requiresT
       // again from scratch.
       const expiresAt = new Date(Date.now() + 5 * 60 * 1000);
       const pendingExpiresAt = new Date(Date.now() + 15 * 60 * 1000);
-
-      if (!serviceClient) {
-        return { success: false, error: 'Doğrulama kodu gönderilemedi. Lütfen tekrar deneyin.' };
-      }
 
       const { error: codeInsertError } = await serviceClient
         .from('verification_codes')

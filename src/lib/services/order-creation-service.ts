@@ -32,6 +32,7 @@ import {
   reserveCoupon,
   type CouponRow,
 } from '@/lib/services/coupon-service';
+import type { CouponRejectionReason } from '@/lib/pricing/coupon';
 import { isMissingColumnError, isMissingFunctionError } from '@/lib/supabase/errors';
 import { getCachedAnalysis, saveAnalysis } from '@/lib/pricing/server/analysis-cache';
 import {
@@ -102,6 +103,79 @@ export interface CreatedOrder {
   vat: number;
   total: number;
   itemCount: number;
+}
+
+/**
+ * Sepet fiyat teklifi girdisi. Sipariş oluşturmaz; yalnızca sunucunun
+ * uygulayacağı birim fiyatları ve toplamları döndürür.
+ */
+export interface QuoteInput {
+  items: OrderItemInput[];
+  storeItems: StoreItemInput[];
+  couponCode?: string;
+}
+
+export interface OrderQuote {
+  totals: {
+    subtotal: number;
+    discount: number;
+    shipping: number;
+    vat: number;
+    total: number;
+  };
+  /** İstekteki `items` dizisiyle aynı sırada. */
+  items: PriceChangeDetails['items'];
+  /** İstekteki `storeItems` dizisiyle aynı sırada. */
+  storeItems: PriceChangeDetails['storeItems'];
+  /**
+   * Sunucunun kullandığı KDV/kargo ayarları. İstemci önizlemesi bu değerlerle
+   * hesaplanır; modül cache'i eskimiş olsa bile gösterilen tutar sunucununkiyle
+   * aynı kalır.
+   */
+  settings: {
+    vatRate: number;
+    shippingFee: number;
+    freeShippingMinAmount: number;
+  };
+  coupon: {
+    applied: boolean;
+    reason?: CouponRejectionReason;
+    message?: string;
+  };
+}
+
+/** Kupon uygulanamadığında teklife eşlik eden bilgi. */
+interface CouponIssue {
+  kind: 'unavailable' | 'rejected';
+  reason?: CouponRejectionReason;
+  message: string;
+}
+
+interface PricedCart {
+  supabase: ReturnType<typeof createServiceClient>;
+  user: { id: string; email?: string | null };
+  settings: Awaited<ReturnType<typeof loadSettings>>;
+  resolvedItems: ResolvedItem[];
+  resolvedStoreItems: ResolvedStoreItem[];
+  coupon: CouponRow | null;
+  couponIssue: CouponIssue | null;
+  serviceSubtotal: number;
+  storeSubtotal: number;
+  totals: {
+    subtotal: number;
+    discount: number;
+    shipping: number;
+    vat: number;
+    total: number;
+  };
+  /** Kupon reddedildiğinde istemciye gösterilecek, kuponsuz toplamlar. */
+  totalsWithoutCoupon: {
+    subtotal: number;
+    discount: number;
+    shipping: number;
+    vat: number;
+    total: number;
+  };
 }
 
 export class OrderCreationError extends Error {
@@ -532,7 +606,15 @@ async function ensureSlicedAnalysis(
   });
 }
 
-export async function createOrder(input: CreateOrderInput): Promise<CreatedOrder> {
+/**
+ * Fiyat otoritesi: sepetin tamamını sunucu verisiyle fiyatlar.
+ *
+ * `createOrder` ve `POST /api/v1/orders/quote` aynı fonksiyonu kullanır.
+ * Böylece sepette/checkout'ta gösterilen fiyat ile siparişin gerçek fiyatı
+ * aynı kurallardan üretilir; `409 price_changed` yalnızca gerçek bir
+ * değişiklikte (admin fiyatı, stok, ayar) oluşur.
+ */
+async function priceCart(input: QuoteInput): Promise<PricedCart> {
   const { items, storeItems } = input;
 
   if (!items.length && !storeItems.length) {
@@ -771,69 +853,58 @@ export async function createOrder(input: CreateOrderInput): Promise<CreatedOrder
   const storeSubtotal = resolvedStoreItems.reduce((sum, i) => sum + i.totalPrice, 0);
   const itemsSubtotal = serviceSubtotal + storeSubtotal;
 
+  const totalsWithoutCoupon = calculateOrderTotals({
+    itemsSubtotal,
+    vatRate: settings.vatRate,
+    shippingFee: settings.shippingFee,
+    freeShippingMinAmount: settings.freeShippingMinAmount,
+  });
+
   let coupon: CouponRow | null = null;
   let discountAmount = 0;
   let freeShipping = false;
+  let couponIssue: CouponIssue | null = null;
 
   if (input.couponCode?.trim()) {
     if (!(await isCouponSystemEnabled(supabase))) {
-      throw new OrderCreationError(COUPON_UNAVAILABLE_MESSAGE, 503);
-    }
-
-    const check = await checkCoupon(supabase, {
-      code: input.couponCode,
-      userId: user.id,
-      itemsSubtotal,
-      serviceSubtotal,
-      storeSubtotal,
-    });
-
-    if (!check.ok) {
-      // Sistem kapalıysa (available=false) bu bir kupon reddi değil, altyapı
-      // sorunudur; istemci kuponu silmemeli.
-      if (!check.available) {
-        throw new OrderCreationError(check.evaluation.message, 503);
-      }
-
-      /**
-       * Kupon reddedildi (ör. tek kullanımlık kupon zaten kullanılmış).
-       * İstemci kuponu kaldırıp yeni tutarı gösterebilsin diye kuponsuz
-       * toplamlar da gönderilir. Sipariş, müşteri yeni tutarı onaylayana kadar
-       * oluşturulmaz: kupon sessizce düşüp tutar değişmemeli.
-       */
-      const withoutCoupon = calculateOrderTotals({
+      couponIssue = { kind: 'unavailable', message: COUPON_UNAVAILABLE_MESSAGE };
+    } else {
+      const check = await checkCoupon(supabase, {
+        code: input.couponCode,
+        userId: user.id,
         itemsSubtotal,
-        vatRate: settings.vatRate,
-        shippingFee: settings.shippingFee,
-        freeShippingMinAmount: settings.freeShippingMinAmount,
+        serviceSubtotal,
+        storeSubtotal,
       });
 
-      throw new OrderCreationError(
-        check.evaluation.message,
-        couponFailureStatus(check.evaluation.reason),
-        {
-          code: 'coupon_invalid',
-          details: {
+      if (!check.ok) {
+        if (!check.available) {
+          // Sistem kapalıysa (available=false) bu bir kupon reddi değil,
+          // altyapı sorunudur; istemci kuponu silmemeli.
+          couponIssue = { kind: 'unavailable', message: check.evaluation.message };
+        } else {
+          /**
+           * Kupon reddedildi (ör. tek kullanımlık kupon zaten kullanılmış).
+           * İstemci kuponu kaldırıp yeni tutarı gösterebilsin diye kuponsuz
+           * toplam da döner. Sipariş, müşteri yeni tutarı onaylayana kadar
+           * oluşturulmaz: kupon sessizce düşüp tutar değişmemeli.
+           */
+          couponIssue = {
+            kind: 'rejected',
             reason: check.evaluation.reason,
-            totals: {
-              subtotal: withoutCoupon.subtotal,
-              discount: withoutCoupon.discount,
-              shipping: withoutCoupon.shipping,
-              vat: withoutCoupon.vat,
-              total: withoutCoupon.total,
-            },
-          },
+            message: check.evaluation.message,
+          };
         }
-      );
+      } else {
+        coupon = check.coupon;
+        discountAmount = check.evaluation.discountAmount;
+        freeShipping = check.evaluation.freeShipping;
+      }
     }
-
-    coupon = check.coupon;
-    discountAmount = check.evaluation.discountAmount;
-    freeShipping = check.evaluation.freeShipping;
   }
 
   // ---------- Totals (server-side) ----------
-  const { subtotal, discount, shipping, vat, total } = calculateOrderTotals({
+  const totals = calculateOrderTotals({
     itemsSubtotal,
     vatRate: settings.vatRate,
     shippingFee: settings.shippingFee,
@@ -842,10 +913,102 @@ export async function createOrder(input: CreateOrderInput): Promise<CreatedOrder
     freeShipping,
   });
 
-  if (settings.minOrderAmount > 0 && subtotal < settings.minOrderAmount) {
+  if (settings.minOrderAmount > 0 && totals.subtotal < settings.minOrderAmount) {
     throw new OrderCreationError(
       `Minimum sipariş tutarı ${settings.minOrderAmount.toFixed(2)} TL. Sepetinize ürün ekleyin.`,
       422
+    );
+  }
+
+  return {
+    supabase,
+    user,
+    settings,
+    resolvedItems,
+    resolvedStoreItems,
+    coupon,
+    couponIssue,
+    serviceSubtotal,
+    storeSubtotal,
+    totals,
+    totalsWithoutCoupon,
+  };
+}
+
+/**
+ * Sipariş oluşturmadan sepeti sunucu fiyatlarıyla döndürür.
+ *
+ * Sepet ve checkout bu ucu kullanarak gösterdikleri birim fiyatları sunucunun
+ * hesapladığı fiyatlarla eşitler. Böylece adet değişiminde `birim × adet`
+ * varsayımından doğan yanlış toplam ve ardından gelen `409 price_changed`
+ * uyarısı ortadan kalkar.
+ */
+export async function quoteOrder(input: QuoteInput): Promise<OrderQuote> {
+  const priced = await priceCart(input);
+
+  return {
+    totals: priced.totals,
+    items: priced.resolvedItems.map((item, index) => ({
+      index,
+      unitPrice: item.unitPrice,
+      totalPrice: item.totalPrice,
+      supportEnabled: item.supportEnabled,
+      printSettingId: item.printSettingId,
+      isPreorder: item.isPreorder,
+      preorderDiscountPercent: item.preorderDiscountPercent,
+      estimatedRestockDays: item.estimatedRestockDays,
+    })),
+    storeItems: priced.resolvedStoreItems.map((item, index) => ({
+      index,
+      unitPrice: item.unitPrice,
+      totalPrice: item.totalPrice,
+    })),
+    settings: {
+      vatRate: priced.settings.vatRate,
+      shippingFee: priced.settings.shippingFee,
+      freeShippingMinAmount: priced.settings.freeShippingMinAmount,
+    },
+    coupon: priced.coupon
+      ? { applied: true }
+      : priced.couponIssue
+        ? {
+            applied: false,
+            reason: priced.couponIssue.reason,
+            message: priced.couponIssue.message,
+          }
+        : { applied: false },
+  };
+}
+
+export async function createOrder(input: CreateOrderInput): Promise<CreatedOrder> {
+  const priced = await priceCart(input);
+  const {
+    supabase,
+    user,
+    resolvedItems,
+    resolvedStoreItems,
+    coupon,
+    couponIssue,
+    totals,
+    totalsWithoutCoupon,
+  } = priced;
+  const { subtotal, discount, shipping, vat, total } = totals;
+
+  if (couponIssue) {
+    if (couponIssue.kind === 'unavailable') {
+      throw new OrderCreationError(couponIssue.message, 503);
+    }
+
+    throw new OrderCreationError(
+      couponIssue.message,
+      couponFailureStatus(couponIssue.reason ?? 'not_found'),
+      {
+        code: 'coupon_invalid',
+        details: {
+          reason: couponIssue.reason,
+          totals: totalsWithoutCoupon,
+        },
+      }
     );
   }
 

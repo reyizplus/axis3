@@ -20,8 +20,9 @@ import { Dialog3DViewer } from '@/components/ui/dialog-3d-viewer';
 import { calculateCartDeliveryDays } from '@/lib/utils/delivery-calculator';
 import { paymentGatewayService, type EnabledGateway } from '@/lib/services/payment-gateway-service';
 import { getVatRate, getShippingSettings, resetVatRateCache, resetShippingSettingsCache } from '@/lib/services/settings-service';
-import { calculateOrderTotals } from '@/lib/services/order-totals';
+import { calculateOrderTotals, PRICE_DRIFT_TOLERANCE } from '@/lib/services/order-totals';
 import type { PriceChangeDetails } from '@/lib/services/order-totals';
+import { requestOrderQuote, toOrderItemInput, toStoreItemInput } from '@/lib/cart/order-quote-client';
 import { useCoupon } from '@/lib/cart/use-coupon';
 import { CouponInput } from '@/components/checkout/coupon-input';
 import {
@@ -58,6 +59,8 @@ export default function CheckoutPage() {
   const [vatRate, setVatRate] = useState(0.20);
   const [shippingFee, setShippingFee] = useState(0);
   const [freeShippingMinAmount, setFreeShippingMinAmount] = useState(0);
+  /** Sunucu teklifi kalemleri doğrulayamazsa (silinmiş dosya, stok vb.). */
+  const [quoteError, setQuoteError] = useState<string | null>(null);
 
   const [fullName, setFullName] = useState('');
   const [phone, setPhone] = useState('');
@@ -106,13 +109,60 @@ export default function CheckoutPage() {
 
   const loadCart = async () => {
     try {
-      const items = cartService.getItems(); const sItems = getStoreItems(); setCartItems(items); setStoreItems(sItems);
+      let items = cartService.getItems();
+      let sItems = getStoreItems();
+      setCartItems(items); setStoreItems(sItems);
       if (items.length === 0 && sItems.length === 0) { toast.error('Sepetiniz boş'); router.push('/cart'); return; }
       if (items.length > 0) { setIsCalculatingDelivery(true); setEstimatedDays(await calculateCartDeliveryDays(items)); }
-      setVatRate(await getVatRate());
-      const shipSettings = await getShippingSettings();
-      setShippingFee(shipSettings.shippingFee);
-      setFreeShippingMinAmount(shipSettings.freeShippingMinAmount);
+
+      setQuoteError(null);
+
+      // Sunucu fiyat otoritesi: siparişi oluşturan servisin aynısı. Gösterilen
+      // birim fiyat/toplam, siparişin gerçek tutarıyla eşitlenir. Önceden
+      // burada yalnızca yerel (yükleme anındaki) fiyatlar gösteriliyordu ve
+      // adet değişimi sonrası sunucu farklı fiyat verince sipariş 409 ile
+      // dönüyordu.
+      const { quote, error: quoteFailure } = await requestOrderQuote({
+        items: items.map(toOrderItemInput),
+        storeItems: sItems.map(toStoreItemInput),
+      });
+
+      if (quote) {
+        if (quote.items.length > 0) await cartService.applyServerPrices(quote.items);
+        if (quote.storeItems.length > 0) applyStoreItemPrices(quote.storeItems);
+
+        items = cartService.getItems();
+        sItems = getStoreItems();
+        setCartItems(items);
+        setStoreItems(sItems);
+
+        // KDV/kargo değerleri de sunucudan gelir; modül cache'i eski kalmış
+        // olsa bile istemci toplamı sunucununkiyle aynı olur.
+        setVatRate(quote.settings.vatRate);
+        setShippingFee(quote.settings.shippingFee);
+        setFreeShippingMinAmount(quote.settings.freeShippingMinAmount);
+      } else {
+        if (quoteFailure?.status === 401) {
+          router.push('/login?redirectTo=/checkout');
+          return;
+        }
+
+        // Kalem düzeyinde hata (silinmiş dosya, stok, geçersiz ayar): sipariş
+        // son adımda patlamasın, burada göster. Geçici hatalar (429/5xx/ağ)
+        // butonu kalıcı olarak kilitlemesin; sipariş anında yeniden denenir.
+        if (quoteFailure && quoteFailure.status !== 0) {
+          const blocking = [400, 403, 404, 409, 422].includes(quoteFailure.status);
+          if (blocking) setQuoteError(quoteFailure.message);
+          toast.error(quoteFailure.message);
+        }
+
+        resetVatRateCache();
+        resetShippingSettingsCache();
+        setVatRate(await getVatRate());
+        const shipSettings = await getShippingSettings();
+        setShippingFee(shipSettings.shippingFee);
+        setFreeShippingMinAmount(shipSettings.freeShippingMinAmount);
+      }
     } catch { toast.error('Sepet yüklenemedi'); }
     finally { setIsLoading(false); setIsCalculatingDelivery(false); }
   };
@@ -137,7 +187,8 @@ export default function CheckoutPage() {
    */
   const applyServerPriceChange = async (
     details: PriceChangeDetails,
-    previousTotal: number
+    previousTotal: number,
+    options: { silent?: boolean } = {}
   ) => {
     const changedServiceItems = await cartService.applyServerPrices(details.items);
     const changedStoreItems = applyStoreItemPrices(details.storeItems);
@@ -155,6 +206,13 @@ export default function CheckoutPage() {
     setShippingFee(shipSettings.shippingFee);
     setFreeShippingMinAmount(shipSettings.freeShippingMinAmount);
 
+    if (options.silent) {
+      // Tutar düştü: müşteriye sorulacak bir şey yok, sipariş sessizce
+      // yeniden gönderilir.
+      setPriceChange(null);
+      return;
+    }
+
     setPriceChange({ kind: 'prices', previousTotal, total: details.totals.total });
     toast.error(
       'Sepet fiyatları güncellendi. Yeni tutarı kontrol edip siparişi tekrar onaylayın.'
@@ -166,34 +224,16 @@ export default function CheckoutPage() {
     if (!hasServiceItems && !hasStoreItems) { toast.error('Sepetiniz boş'); return; }
     setIsSubmitting(true);
     setPriceChange(null);
-    const expectedTotal = Math.round(total * 100) / 100;
-    try {
-      // Sipariş sunucuda oluşturulur: fiyat, stok ve sahiplik doğrulaması
-      // API tarafında yapılır. İstemci yalnızca referans ve adres gönderir.
-      const response = await fetch('/api/v1/orders/create', {
+
+    const submitOrder = (expectedTotal: number) =>
+      fetch('/api/v1/orders/create', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          items: cartItems.map((item) => ({
-            fileId: item.fileId,
-            materialId: item.materialId,
-            quantity: item.quantity,
-            color: item.color ?? null,
-            nozzleSizeId: item.nozzleSizeId ?? null,
-            nozzleSizeMm: item.nozzleSizeMm ?? null,
-            supportEnabled: item.supportEnabled !== false,
-            printSettingId: item.printSettingId && item.printSettingId !== 'custom' ? item.printSettingId : null,
-            printSettingName: item.printSettingName ?? null,
-            isPreorder: item.isPreorder ?? false,
-            preorderDiscountPercent: item.preorderDiscountPercent ?? null,
-            estimatedRestockDays: item.estimatedRestockDays ?? null,
-            customLayerHeight: item.customLayerHeight ?? null,
-            customInfillPercentage: item.customInfillPercentage ?? null,
-            customTimeMultiplier: item.customTimeMultiplier ?? null,
-            customLayerThickness: item.customLayerThickness ?? null,
-            customExposureTime: item.customExposureTime ?? null,
-          })),
-          storeItems: storeItems.map((item) => ({ productId: item.productId, quantity: item.quantity })),
+          // Sipariş sunucuda oluşturulur: fiyat, stok ve sahiplik doğrulaması
+          // API tarafında yapılır. İstemci yalnızca referans ve adres gönderir.
+          items: cartItems.map(toOrderItemInput),
+          storeItems: storeItems.map(toStoreItemInput),
           address: {
             fullName,
             phone,
@@ -213,17 +253,45 @@ export default function CheckoutPage() {
         }),
       });
 
-      const result = await response.json().catch(() => null);
-      if (!response.ok || !result?.success) {
+    let expectedTotal = Math.round(total * 100) / 100;
+
+    try {
+      let response = await submitOrder(expectedTotal);
+      let result = await response.json().catch(() => null);
+
+      /**
+       * `409 price_changed`: sipariş oluşmadı, yalnızca fiyat farkı var.
+       *
+       * Tutar düştüyse müşteriye sorulacak bir şey yok; sepeti sunucu
+       * fiyatlarıyla eşitleyip aynı siparişi sessizce tekrar gönderiyoruz
+       * (tek tıkla sipariş). Yalnızca tutar ARTTIYSA onay isteniyor, aksi
+       * halde kullanıcı haber verilmeden daha fazla ödemiş olur.
+       */
+      for (let attempt = 0; attempt < 3; attempt++) {
         if (
-          response.status === 409 &&
-          result?.code === 'price_changed' &&
-          result?.details
+          !(
+            response.status === 409 &&
+            result?.code === 'price_changed' &&
+            result?.details
+          )
         ) {
-          await applyServerPriceChange(result.details as PriceChangeDetails, expectedTotal);
-          return;
+          break;
         }
 
+        const details = result.details as PriceChangeDetails;
+        const newTotal = details.totals.total;
+        const isIncrease = newTotal > expectedTotal + PRICE_DRIFT_TOLERANCE;
+
+        await applyServerPriceChange(details, expectedTotal, { silent: !isIncrease });
+        expectedTotal = newTotal;
+
+        if (isIncrease) return;
+
+        response = await submitOrder(expectedTotal);
+        result = await response.json().catch(() => null);
+      }
+
+      if (!response.ok || !result?.success) {
         // Kupon sunucuda geçersiz (ör. tek kullanımlık kupon kullanılmış).
         // Kupon sessizce düşüp tutar değişmesin: kaldır, yeni tutarı göster ve
         // siparişi ancak müşteri tekrar onayladığında oluştur.
@@ -718,8 +786,15 @@ export default function CheckoutPage() {
                     </div>
                   )}
 
+                  {quoteError && (
+                    <div className="rounded-xl border border-destructive/30 bg-destructive/5 p-3 flex items-start gap-2">
+                      <AlertCircle className="h-4 w-4 text-destructive shrink-0 mt-0.5" />
+                      <p className="text-xs text-destructive">{quoteError}</p>
+                    </div>
+                  )}
+
                   <Button onClick={handlePlaceOrder}
-                    disabled={isSubmitting || couponState.isChecking || (!hasServiceItems && !hasStoreItems) || enabledGateways.length === 0 || !paymentMethod}
+                    disabled={isSubmitting || couponState.isChecking || !!quoteError || (!hasServiceItems && !hasStoreItems) || enabledGateways.length === 0 || !paymentMethod}
                     size="lg" className="w-full h-12 gap-2 rounded-xl shadow-lg shadow-primary/20"
                   >
                     {isSubmitting ? <><Loader2 className="h-4 w-4 animate-spin" />İşleniyor...</> : <><CheckCircle2 className="h-5 w-5" />Siparişi Tamamla</>}

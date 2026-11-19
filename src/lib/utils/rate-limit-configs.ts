@@ -148,3 +148,15 @@ export function createAdminRateLimiter(): RateLimiterInstance {
 export function createGenericRateLimiter(): RateLimiterInstance {
   return createLimiter('axis3:generic', 10, 10000);
 }
+
+/**
+ * Order Quote Rate Limiter
+ * 30 requests per 10 seconds per user.
+ *
+ * Sepette adet değiştirmek her seferinde bir teklif isteği üretir; sayaç
+ * kullanıcıyı yanlışlıkla kilitlememeli, ama dilimleme tetikleyen uç nokta
+ * sınırsız da kalmamalı.
+ */
+export function createQuoteRateLimiter(): RateLimiterInstance {
+  return createLimiter('axis3:quote', 30, 10000);
+}

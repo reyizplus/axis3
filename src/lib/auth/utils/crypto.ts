@@ -4,12 +4,31 @@ const ALGORITHM = 'aes-256-gcm';
 const IV_LENGTH = 16;
 const AUTH_TAG_LENGTH = 16;
 
+const DEV_FALLBACK_KEY = 'axis3-dev-encryption-key';
+let warnedAboutFallback = false;
+
 function getEncryptionKey(): Buffer {
   const key = process.env.ENCRYPTION_KEY;
-  if (!key || key.length < 32) {
+  if (key && key.length >= 32) {
+    return Buffer.from(key.padEnd(32, 'x').slice(0, 32), 'utf8');
+  }
+
+  // Üretimde sessizce zayıf bir anahtara düşmek yok: 2FA parolası bu anahtarla
+  // şifreleniyor. Yerelde ise 2FA akışı env kurulumu olmadan da test
+  // edilebilsin diye sabit bir geliştirme anahtarı kullanılır.
+  if (process.env.NODE_ENV === 'production') {
     throw new Error('ENCRYPTION_KEY environment variable is required (32+ chars)');
   }
-  return Buffer.from(key.padEnd(32, 'x').slice(0, 32), 'utf8');
+
+  if (!warnedAboutFallback) {
+    warnedAboutFallback = true;
+    console.warn(
+      '[crypto] ENCRYPTION_KEY is not set; using the insecure development key. ' +
+      'Pending 2FA sessions will not survive a change of this value.'
+    );
+  }
+
+  return Buffer.from(DEV_FALLBACK_KEY.padEnd(32, 'x').slice(0, 32), 'utf8');
 }
 
 export function encrypt(text: string): string {

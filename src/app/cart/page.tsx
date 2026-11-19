@@ -97,6 +97,16 @@ function CartContent() {
       const shipSettings = await getShippingSettings();
       setShippingFee(shipSettings.shippingFee);
       setFreeShippingMinAmount(shipSettings.freeShippingMinAmount);
+
+      // 3D kalemlerin birim fiyatı adede bağlı (adet indirimi + satır başına
+      // bir kez alınan servis/hazırlık giderleri). Sepette `birim × adet`
+      // gösterip siparişte 409 yemek yerine fiyatları sunucudan tazele.
+      // Beklemeyi engellememek için arka planda çalışır.
+      if (items.length > 0) {
+        void cartService.repriceCart().then((priced) => {
+          if (priced.length > 0) setCartItems(priced);
+        });
+      }
     } catch { toast.error('Sepet yüklenemedi'); }
     finally { setIsLoading(false); setIsCalculatingDelivery(false); }
   }, []);

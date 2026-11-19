@@ -131,31 +131,28 @@ export async function loadStoreCartFromDb(): Promise<void> {
 
   _loadPromise = (async () => {
     try {
-      const localItems = getStoreItems();
-
-      // Always sync local state to DB first (even if empty).
-      // This ensures DB is cleaned of stale/deleted items before reading back.
-      const syncOk = await syncStoreCart(localItems);
-
-      if (!syncOk) {
-        // Sync failed — DB may contain stale items.
-        // Keep local state (which is already clean) rather than overwriting with stale DB.
-        return;
-      }
-
+      // Önce sunucudaki sepeti oku. Önceden yerel (boş olabilen) sepet önce
+      // DB'ye yazılıyordu; bu yüzden yeni bir cihazda giriş yapan kullanıcı,
+      // başka cihazda doldurduğu mağaza sepetini siliyordu.
       const res = await fetch('/api/cart/sync-store');
       if (!res.ok) return;
       const data = await res.json();
-      if (data.items && Array.isArray(data.items)) {
-        // DB was just synced from local state, so reading back is safe.
-        // Only overwrite if DB returned items (to handle the cross-device scenario).
-        if (data.items.length > 0) {
-          const clean = deduplicateItems(data.items);
-          localStorage.setItem(STORE_CART_KEY, JSON.stringify(clean));
-          window.dispatchEvent(new CustomEvent('store-cart-updated'));
-        }
-        // If DB returned empty but local had items (shouldn't happen after sync),
-        // keep local items.
+      const remote: StoreItem[] = Array.isArray(data.items) ? data.items : [];
+      const local = getStoreItems();
+
+      if (local.length === 0 && remote.length > 0) {
+        // Bu cihazda sepet yok: sunucudaki sepeti benimse.
+        const clean = deduplicateItems(remote);
+        localStorage.setItem(STORE_CART_KEY, JSON.stringify(clean));
+        window.dispatchEvent(new CustomEvent('store-cart-updated'));
+        return;
+      }
+
+      // Yerelde sepet varsa bu oturumun güncel hali kabul edilir ve sunucuya
+      // yazılır. Sunucudaki miktarlarla toplamak, aynı sepeti iki kez sayıp
+      // adetleri şişirirdi.
+      if (local.length > 0) {
+        await syncStoreCart(local);
       }
     } catch {
       // silently fail

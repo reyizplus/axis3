@@ -5,7 +5,7 @@ import { User } from '@supabase/supabase-js';
 import { createClient } from '@/lib/supabase/client';
 import { useRouter } from 'next/navigation';
 import { cartService } from '@/lib/cart/cart-service';
-import { loadStoreCartFromDb, clearStoreCart } from '@/lib/cart/store-cart';
+import { loadStoreCartFromDb } from '@/lib/cart/store-cart';
 
 interface UserProfile {
   id: string;
@@ -138,8 +138,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [mounted, loadUserProfile, supabase]);
 
   const signOut = async () => {
+    // Sepet bilinçli olarak silinmiyor: kullanıcı çıkış yapıp tekrar girdiğinde
+    // sepetini bulmalı. Sipariş tamamlandığında checkout sepeti zaten temizler.
     cartService.setUserId(null);
-    clearStoreCart();
     await supabase.auth.signOut();
     setUser(null);
     setProfile(null);
