@@ -6,9 +6,11 @@
  * apart. `PricingEngine` only loads settings and calls `computeQuote`.
  *
  * Pricing rules (single source of truth):
- * - Material, machine, electricity and per-part labor scale with quantity.
+ * - Material, machine, electricity and labor scale with quantity.
  * - Setup (warm-up, calibration, bed prep), file preparation and the service
- *   fee are charged ONCE per order — never once per part.
+ *   fee are charged **per part**: each unit pays them once, so the unit price
+ *   does not change as the quantity grows. Only a quantity-discount tier can
+ *   lower it, and only when its `minQty` is reached.
  * - Supports are counted once. For G-Code input the total filament weight
  *   already includes supports, so the support weight is only a breakdown.
  * - **FDM is priced only from a real G-Code analysis.** Volume estimation was
@@ -59,7 +61,7 @@ export interface PricingRates {
   electricityRatePerHour: number;
   laborHourlyRate: number;
   riskPercentage: number;
-  /** Fixed fee charged once per order. */
+  /** Her adet için alınan sabit ücret (adetle çarpılır). */
   serviceFee: number;
   /** Must be >= 1. A value of 1 means "no profit margin added". */
   profitMultiplier: number;
@@ -438,7 +440,10 @@ export function priceEstimate(
 
   const setupHours = warmUpHours + calibrationHours + bedPrepHours;
   const correctedPerUnitHours = estimate.printHours + deadTimePerPartHours;
-  const totalOrderHours = correctedPerUnitHours * quantity + setupHours;
+  // Hazırlık (ısınma, kalibrasyon, yatak hazırlığı) HER ADET için tekrarlanır.
+  // Böylece birim fiyat adet arttıkça değişmez; yalnızca adet indirimi kademesi
+  // aşıldığında düşer.
+  const totalOrderHours = (correctedPerUnitHours + setupHours) * quantity;
 
   // ---------- Machine (whole line) ----------
   const machineHourlyRate = Math.max(0, finite(terms.rates.machineHourlyRate, 0));
@@ -451,7 +456,7 @@ export function priceEstimate(
   const electricityRate = Math.max(0, finite(terms.rates.electricityRatePerHour, 0));
   const electricitySubtotal = roundMoney(totalOrderHours * electricityRate);
 
-  // ---------- Labor (file prep once, the rest per part) ----------
+  // ---------- Labor (all per part) ----------
   const filePrepMinutes = Math.max(0, finite(terms.labor.filePrepMinutes, 0));
 
   // Destek ayıklama yalnızca gerçekten destek varsa işçilik doğurur. Destek
@@ -471,7 +476,7 @@ export function priceEstimate(
   const postProcessingPerPart = Math.max(0, finite(terms.labor.postProcessingMinutes, 0));
 
   const laborMinutesTotal =
-    filePrepMinutes + (supportRemovalPerPart + postProcessingPerPart) * quantity;
+    (filePrepMinutes + supportRemovalPerPart + postProcessingPerPart) * quantity;
   const laborHourlyRate = Math.max(0, finite(terms.rates.laborHourlyRate, 0));
   const laborSubtotal = roundMoney((laborMinutesTotal / 60) * laborHourlyRate);
 
@@ -484,8 +489,10 @@ export function priceEstimate(
   const riskPercentage = clamp(finite(terms.rates.riskPercentage, 0), 0, 100);
   const riskSubtotal = roundMoney(directCost * (riskPercentage / 100));
 
-  // ---------- Service fee (once per order) ----------
-  const serviceFee = roundMoney(Math.max(0, finite(terms.rates.serviceFee, 0)));
+  // ---------- Service fee (per part) ----------
+  // Sabit ücret her adede yansıtılır: birim fiyat adetle değişmez.
+  const serviceFeePerUnit = roundMoney(Math.max(0, finite(terms.rates.serviceFee, 0)));
+  const serviceFee = roundMoney(serviceFeePerUnit * quantity);
 
   // ---------- Profit margin ----------
   const profitMultiplier = Math.max(1, finite(terms.rates.profitMultiplier, 1));
@@ -572,7 +579,9 @@ export function priceEstimate(
       subtotal: electricitySubtotal,
     },
     labor: {
-      filePrepMinutes,
+      // Tüm işçilik süreleri satır toplamıdır (adet × birim süre); hazırlık da
+      // her adet için sayılır.
+      filePrepMinutes: roundMoney(filePrepMinutes * quantity, 2),
       supportRemovalMinutes: roundMoney(supportRemovalPerPart * quantity, 2),
       postProcessingMinutes: roundMoney(postProcessingPerPart * quantity, 2),
       totalMinutes: roundMoney(laborMinutesTotal, 2),
@@ -608,12 +617,14 @@ export function priceEstimate(
     estimatedTime: {
       rawPrintTimeHours: roundMoney(estimate.printHours, 2),
       correctedTimeHours: roundMoney(correctedPerUnitHours, 2),
-      orderSetupHours: roundMoney(setupHours, 2),
+      // Hazırlık her adet için sayıldığından satır toplamıdır.
+      orderSetupHours: roundMoney(setupHours * quantity, 2),
       totalOrderHours: roundMoney(totalOrderHours, 2),
       correctionBreakdown: {
-        warmUpMinutes: Math.round(warmUpHours * 60 * 100) / 100,
-        calibrationMinutes: Math.round(calibrationHours * 60 * 100) / 100,
-        bedPrepMinutes: Math.round(bedPrepHours * 60 * 100) / 100,
+        // Admin fiyat detayında satır toplamı gösterilir (deadTime ile aynı kural).
+        warmUpMinutes: Math.round(warmUpHours * 60 * quantity * 100) / 100,
+        calibrationMinutes: Math.round(calibrationHours * 60 * quantity * 100) / 100,
+        bedPrepMinutes: Math.round(bedPrepHours * 60 * quantity * 100) / 100,
         deadTimePerPartMinutes: Math.round(deadTimePerPartHours * 60 * quantity * 100) / 100,
       },
     },

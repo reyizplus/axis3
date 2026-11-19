@@ -354,11 +354,6 @@ function CartContent() {
                           </div>
                           <div className="flex flex-col items-end gap-1.5 shrink-0 text-right">
                             <p className="text-xs text-muted-foreground">Birim: {item.unitPrice.toFixed(2)} TL</p>
-                            {item.quantity > 1 && (
-                              <p className="max-w-[200px] text-[10px] leading-tight text-muted-foreground/80">
-                                Hazırlık ve servis ücreti tek seferliktir; adede bölündüğü için birim fiyat düşer.
-                              </p>
-                            )}
                             {item.pricingPending ? (
                               <p className="text-sm font-semibold text-muted-foreground inline-flex items-center gap-1.5">
                                 <Loader2 className="h-3.5 w-3.5 animate-spin" /> Hesaplanıyor

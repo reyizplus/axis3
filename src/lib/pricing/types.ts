@@ -196,7 +196,7 @@ export interface PricingResult {
     rawPrintTimeHours: number;
     /** Per-unit print time including dead time. */
     correctedTimeHours: number;
-    /** Warm-up + calibration + bed prep, charged once per order. */
+    /** Warm-up + calibration + bed prep, her adet için sayılır (satır toplamı). */
     orderSetupHours?: number;
     /** Whole line time including quantity and setup. */
     totalOrderHours?: number;

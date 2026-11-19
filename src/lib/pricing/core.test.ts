@@ -113,24 +113,34 @@ describe('estimateConsumption', () => {
 });
 
 describe('computeQuote - quantity and setup', () => {
-  it('charges setup, file prep and the service fee once per order', () => {
+  it('charges setup, file prep and the service fee per part', () => {
     const single = quote({ quantity: 1 });
     const triple = quote({ quantity: 3 });
 
+    // Sabit ücretler her adede yansır.
     expect(single.breakdown.serviceFee).toBe(25);
-    expect(triple.breakdown.serviceFee).toBe(25);
+    expect(triple.breakdown.serviceFee).toBe(75);
 
-    // File preparation is per order; support removal and post processing are
-    // per part.
+    // Tüm işçilik süreleri satır toplamıdır; hazırlık da her adet için sayılır.
     expect(single.breakdown.labor.filePrepMinutes).toBe(10);
-    expect(triple.breakdown.labor.filePrepMinutes).toBe(10);
+    expect(triple.breakdown.labor.filePrepMinutes).toBe(30);
     expect(triple.breakdown.labor.supportRemovalMinutes).toBe(45);
     expect(triple.breakdown.labor.postProcessingMinutes).toBe(30);
 
     const singleSetup = single.estimatedTime.orderSetupHours ?? 0;
     const tripleSetup = triple.estimatedTime.orderSetupHours ?? 0;
     expect(singleSetup).toBeCloseTo(10 / 60, 2);
-    expect(tripleSetup).toBeCloseTo(10 / 60, 2);
+    expect(tripleSetup).toBeCloseTo(30 / 60, 2);
+  });
+
+  it('keeps the unit price constant as the quantity grows', () => {
+    // Sabit ücretler adede bölünmediği için birim fiyat adetle değişmez;
+    // yalnızca adet indirimi kademesi düşürebilir.
+    const one = quote({ quantity: 1 });
+    const ten = quote({ quantity: 10 });
+
+    expect(ten.breakdown.pricePerUnit).toBeCloseTo(one.breakdown.pricePerUnit, 2);
+    expect(ten.breakdown.quantityDiscount).toBeUndefined();
   });
 
   it('scales machine and electricity time with quantity', () => {
@@ -144,8 +154,9 @@ describe('computeQuote - quantity and setup', () => {
     });
 
     const perUnit = single.estimatedTime.correctedTimeHours;
+    // Hazırlık her adet için tekrarlandığı için toplam süre adetle doğrusal.
     const expectedTriple =
-      perUnit * 3 + (single.estimatedTime.orderSetupHours ?? 0);
+      (perUnit + (single.estimatedTime.orderSetupHours ?? 0)) * 3;
 
     expect(triple.estimatedTime.totalOrderHours).toBeCloseTo(expectedTriple, 1);
     expect(triple.breakdown.machineAmortization.subtotal).toBeGreaterThan(
@@ -438,15 +449,17 @@ describe('LinePriceModel - anında fiyat ve kademe eşiği', () => {
     }
   });
 
-  it('adet arttıkça birim fiyat adet indirimi dışında da düşer (tek seferlik giderler)', () => {
-    // Bu davranış bilinçli: hazırlık + servis ücreti satır başına BİR kez
-    // alınır, adede bölünür. Sepet bunu kullanıcıya açıklar.
+  it('adet arttıkça birim fiyat değişmez (sabit ücretler adet başına)', () => {
+    // Hazırlık + servis ücreti her adede yansır; bu yüzden birim fiyat
+    // adet arttıkça düşmez. Yalnızca kademe eşiği aşılırsa düşer.
     const input: QuoteInput = { ...BASE, rates: { ...BASE.rates, serviceFee: 100 } };
     const one = computeQuote({ ...input, quantity: 1 });
     const two = computeQuote({ ...input, quantity: 2 });
+    const ten = computeQuote({ ...input, quantity: 10 });
 
-    expect(two.breakdown.pricePerUnit).toBeLessThan(one.breakdown.pricePerUnit);
     expect(two.breakdown.quantityDiscount).toBeUndefined();
+    expect(two.breakdown.pricePerUnit).toBeCloseTo(one.breakdown.pricePerUnit, 2);
+    expect(ten.breakdown.pricePerUnit).toBeCloseTo(one.breakdown.pricePerUnit, 2);
   });
 });
 
