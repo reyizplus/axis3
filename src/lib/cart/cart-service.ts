@@ -1,6 +1,6 @@
 import type { CartItem, Cart } from './types';
 import { isMissingColumnError } from '@/lib/supabase/errors';
-import { requestOrderQuote, toOrderItemInput } from './order-quote-client';
+import { requestOrderQuote, toOrderItemInput, getLastQuoteSettings } from './order-quote-client';
 
 export type { CartItem } from './types';
 
@@ -12,6 +12,34 @@ export class CartService {
   private pendingSync: (() => Promise<void>) | null = null;
   /** Aynı anda birden fazla teklif isteği gitmesin. */
   private repriceInFlight: Promise<CartItem[]> | null = null;
+  /** Teklif uçarken sepet değiştiyse bitince bir kez daha çalış. */
+  private repriceDirty = false;
+  /** Adet butonuna art arda basmayı tek isteğe indirir. */
+  private repriceTimer: ReturnType<typeof setTimeout> | null = null;
+
+  /**
+   * Sepetin fiyatı etkileyen kimliği. Teklif yanıtı bu imza değişmeden
+   * uygulanmaz: aksi halde kullanıcı 5 → 6 → 7 yaparken ilk isteğin (5 adet)
+   * fiyatı son sepete yazılır ve tutar "zıplar".
+   */
+  private priceSignature(items: CartItem[]): string {
+    return items
+      .map(
+        (item) =>
+          [
+            item.id,
+            item.quantity,
+            item.supportEnabled === false ? 0 : 1,
+            item.printSettingId ?? '',
+            item.color ?? '',
+            item.nozzleSizeMm ?? '',
+            item.customLayerHeight ?? '',
+            item.customInfillPercentage ?? '',
+            item.customTimeMultiplier ?? '',
+          ].join(':')
+      )
+      .join('|');
+  }
 
   private getStorageKey(userId?: string): string {
     if (!userId) {
@@ -66,7 +94,10 @@ export class CartService {
           );
           if (existingIndex >= 0) {
             cart.items[existingIndex].quantity += item.quantity;
-            cart.items[existingIndex].totalPrice = cart.items[existingIndex].unitPrice * cart.items[existingIndex].quantity;
+            // Eski `birim × adet` değeri artık yanlış (adet indirimi ve satır
+            // başına giderler adede bağlı). Sunucu fiyatı gelene kadar
+            // "Hesaplanıyor" gösterilir; tutar zıplamaz.
+            cart.items[existingIndex].pricingPending = true;
           } else {
             cart.items.push({ ...item });
           }
@@ -75,7 +106,7 @@ export class CartService {
         localStorage.removeItem(anonStorageKey);
         // Anonim sepetten gelen adetler birleşti; birim fiyat adede bağlı
         // olduğu için sunucudan tazelenmeli.
-        void this.repriceCart();
+        this.scheduleReprice(0);
       }
 
       if (previousUserId && previousUserId !== userId) {
@@ -149,7 +180,10 @@ export class CartService {
       const existing = cart.items[existingIndex];
       existing.quantity += item.quantity;
       existing.unitPrice = item.unitPrice;
-      existing.totalPrice = existing.unitPrice * existing.quantity;
+      // `unitPrice` tek adet fiyatıdır; toplam adet indirimiyle değişir.
+      // Geçici `birim × adet` yazmak ekranda yanlış (yüksek) tutar gösterip
+      // sonra düşürüyordu. Sunucu fiyatı gelene kadar "Hesaplanıyor" gösterilir.
+      existing.pricingPending = true;
       newItem = existing;
     } else {
       newItem = {
@@ -166,8 +200,8 @@ export class CartService {
     // Birleştirme sonrası adet arttı: `birim × adet` yanlış olabilir (adet
     // indirimi, satır başına bir kez alınan giderler). Sunucu fiyatını uygula.
     if (existingIndex >= 0) {
-      await this.repriceCart();
-      return this.getCart().items.find((i) => i.id === newItem.id) ?? newItem;
+      this.scheduleReprice();
+      return newItem;
     }
 
     return newItem;
@@ -191,50 +225,124 @@ export class CartService {
 
     if (item) {
       item.quantity = quantity;
-      // Geçici değer: sunucu teklifi gelene kadar sepet boş görünmesin.
-      // Asıl fiyat `repriceCart` ile yazılır (`birim × adet` yanlış olabilir).
-      item.totalPrice = item.unitPrice * quantity;
+      // Adet anında yazılır, fiyat sunucudan gelir. `birim × adet` gibi geçici
+      // bir tutar yazmak (adet indirimi yokmuş gibi) fiyatın önce yükselip
+      // sonra düşmesine — "anlamsız oynama"ya — yol açıyordu.
+      item.pricingPending = true;
       this.saveCart(cart);
       this.enqueueSync(() => this.syncCartToDb(cart));
-      await this.repriceCart();
+      this.scheduleReprice();
     }
+  }
+
+  /**
+   * Adet değişikliklerini birleştirir: kullanıcı +/- butonuna art arda
+   * bastığında her tıklama için ayrı teklif isteği gitmez, sepet durulunca
+   * tek istek gider.
+   */
+  scheduleReprice(delay = 200): void {
+    if (typeof window === 'undefined') return;
+
+    if (this.repriceTimer) clearTimeout(this.repriceTimer);
+    this.repriceTimer = setTimeout(() => {
+      this.repriceTimer = null;
+      void this.repriceCart();
+    }, delay);
   }
 
   /**
    * Sepetteki 3D kalemlerin birim/toplam fiyatlarını sunucudan tazeler.
    *
-   * Sipariş oluşturma ile aynı fiyat otoritesini (`/orders/quote`) kullandığı
-   * için adet değişimi, birleştirme veya ayar güncellemesinden sonra sepet
-   * sunucunun kabul edeceği tutarı gösterir; `409 price_changed` oluşmaz.
+   * Sipariş oluşturma ile aynı fiyat otoritesini (`/orders/quote`) kullanır.
+   * İki koruma vardır:
+   * - aynı anda tek istek (koşan istek varsa sonuç beklenir, sonra gerekirse
+   *   yeniden çalışır),
+   * - yanıt uygulanmadan önce sepet imzası kontrol edilir; kullanıcı bu arada
+   *   adedi değiştirdiyse eski yanıt atılır (fiyat zıplaması olmaz).
    */
   async repriceCart(): Promise<CartItem[]> {
     if (typeof window === 'undefined') return this.getCart().items;
-    if (this.repriceInFlight) return this.repriceInFlight;
 
-    const cart = this.getCart();
-    if (cart.items.length === 0) return cart.items;
+    if (this.repriceInFlight) {
+      this.repriceDirty = true;
+      return this.repriceInFlight;
+    }
 
     this.repriceInFlight = (async () => {
       try {
-        const { quote } = await requestOrderQuote({
-          items: cart.items.map(toOrderItemInput),
-          storeItems: [],
-        });
+        let items = this.getCart().items;
 
-        if (!quote || quote.items.length === 0) return this.getCart().items;
+        // En fazla 4 tur: sepet sürekli değişse bile döngü kilitlenmesin.
+        for (let attempt = 0; attempt < 4; attempt++) {
+          this.repriceDirty = false;
+          items = await this.runQuote();
+          if (!this.repriceDirty) break;
+        }
 
-        await this.applyServerPrices(quote.items);
-        return this.getCart().items;
-      } catch {
-        // Fiyat tazelenemedi (ağ/oturum). Sipariş anında sunucu yine kendi
-        // hesabını yapar; burada sepeti bozmuyoruz.
-        return this.getCart().items;
+        return items;
       } finally {
         this.repriceInFlight = null;
       }
     })();
 
     return this.repriceInFlight;
+  }
+
+  /** Tek bir teklif isteği; yanıt sepetin güncel haline ait değilse atılır. */
+  private async runQuote(): Promise<CartItem[]> {
+    const cart = this.getCart();
+    if (cart.items.length === 0) return cart.items;
+
+    const signature = this.priceSignature(cart.items);
+
+    const { quote } = await requestOrderQuote({
+      items: cart.items.map(toOrderItemInput),
+      storeItems: [],
+    });
+
+    const current = this.getCart().items;
+
+    if (!quote || quote.items.length === 0) {
+      // Ağ/oturum/limit hatası: fiyatı bozma, "hesaplanıyor" göstergesini
+      // kapat. Sipariş anında sunucu tutarı yine kendi hesaplar.
+      this.clearPricingPending();
+      return this.getCart().items;
+    }
+
+    if (signature !== this.priceSignature(current)) {
+      // Sepet, istek uçarken değişti: bu yanıt bayat. Uygulanırsa müşteri
+      // önceki adedin fiyatını görür. Güncel sepet için yeniden iste.
+      this.repriceDirty = true;
+      return current;
+    }
+
+    await this.applyServerPrices(quote.items);
+    return this.getCart().items;
+  }
+
+  /**
+   * Sunucunun son teklifte bildirdiği adet indirimi kademeleri.
+   *
+   * Sepet, "10 adette %5 indirim" gibi bir sonraki eşiği bununla gösterir;
+   * kademe listesi istemcide ayrıca tanımlanmaz (sunucu tek kaynak).
+   */
+  getQuantityDiscountTiers(): { minQty: number; discountPercent: number }[] {
+    return getLastQuoteSettings()?.quantityDiscountTiers ?? [];
+  }
+
+  /** Bekleyen "hesaplanıyor" işaretlerini temizler; değişiklik olduysa yazar. */
+  private clearPricingPending(): boolean {    const cart = this.getCart();
+    let changed = false;
+
+    for (const item of cart.items) {
+      if (item.pricingPending) {
+        item.pricingPending = false;
+        changed = true;
+      }
+    }
+
+    if (changed) this.saveCart(cart);
+    return changed;
   }
 
   /**
@@ -254,6 +362,8 @@ export class CartService {
       isPreorder?: boolean;
       preorderDiscountPercent?: number | null;
       estimatedRestockDays?: number | null;
+      quantityDiscount?: number | null;
+      quantityDiscountPercent?: number | null;
     }[]
   ): Promise<boolean> {
     if (typeof window === 'undefined') return false;
@@ -265,7 +375,12 @@ export class CartService {
       const item = cart.items[update.index];
       if (!item) continue;
 
+      // `pricingPending` her durumda kapanır; aksi halde fiyat değişmese bile
+      // satırda "Hesaplanıyor" kalır.
+      const wasPending = item.pricingPending === true;
+
       const changed =
+        wasPending ||
         item.unitPrice !== update.unitPrice ||
         item.totalPrice !== update.totalPrice ||
         (typeof update.supportEnabled === 'boolean' &&
@@ -274,12 +389,17 @@ export class CartService {
         (update.preorderDiscountPercent !== undefined &&
           (item.preorderDiscountPercent ?? null) !== (update.preorderDiscountPercent ?? null)) ||
         (update.estimatedRestockDays !== undefined &&
-          (item.estimatedRestockDays ?? undefined) !== (update.estimatedRestockDays ?? undefined));
+          (item.estimatedRestockDays ?? undefined) !== (update.estimatedRestockDays ?? undefined)) ||
+        (update.quantityDiscount !== undefined &&
+          (item.quantityDiscount ?? 0) !== (update.quantityDiscount ?? 0)) ||
+        (update.quantityDiscountPercent !== undefined &&
+          (item.quantityDiscountPercent ?? null) !== (update.quantityDiscountPercent ?? null));
 
       if (!changed) continue;
 
       item.unitPrice = update.unitPrice;
       item.totalPrice = update.totalPrice;
+      item.pricingPending = false;
       if (typeof update.supportEnabled === 'boolean') {
         item.supportEnabled = update.supportEnabled;
       }
@@ -291,6 +411,12 @@ export class CartService {
       }
       if (update.estimatedRestockDays !== undefined) {
         item.estimatedRestockDays = update.estimatedRestockDays ?? undefined;
+      }
+      if (update.quantityDiscount !== undefined) {
+        item.quantityDiscount = update.quantityDiscount ?? 0;
+      }
+      if (update.quantityDiscountPercent !== undefined) {
+        item.quantityDiscountPercent = update.quantityDiscountPercent ?? null;
       }
       applied = true;
     }

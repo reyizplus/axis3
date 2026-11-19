@@ -15,8 +15,9 @@
 import { randomBytes, randomUUID } from 'crypto';
 import { createClient, createServiceClient } from '@/lib/supabase/server';
 import { PricingEngine, isSlicingEnabled } from '@/lib/pricing';
-import { normalizeVatRate } from '@/lib/pricing/core';
+import { normalizeVatRate, selectDiscountTier } from '@/lib/pricing/core';
 import type { PriceBreakdown as EngineBreakdown } from '@/lib/pricing/types';
+import type { QuantityDiscountTier } from '@/lib/pricing/core';
 import { calculateOrderTotals, hasPriceDrift } from '@/lib/services/order-totals';
 import type { PriceChangeDetails } from '@/lib/services/order-totals';
 import {
@@ -136,6 +137,11 @@ export interface OrderQuote {
     vatRate: number;
     shippingFee: number;
     freeShippingMinAmount: number;
+    /**
+     * Adet indirimi kademeleri. Sepet, bir sonraki kademeyi gösterebilsin diye
+     * ("10 adette %5 indirim") burada döner.
+     */
+    quantityDiscountTiers: QuantityDiscountTier[];
   };
   coupon: {
     applied: boolean;
@@ -157,6 +163,7 @@ interface PricedCart {
   settings: Awaited<ReturnType<typeof loadSettings>>;
   resolvedItems: ResolvedItem[];
   resolvedStoreItems: ResolvedStoreItem[];
+  quantityDiscountTiers: QuantityDiscountTier[];
   coupon: CouponRow | null;
   couponIssue: CouponIssue | null;
   serviceSubtotal: number;
@@ -262,6 +269,10 @@ interface ResolvedItem {
   isPreorder: boolean;
   preorderDiscountPercent: number | null;
   estimatedRestockDays: number | null;
+  /** Adet indirimi (TL) — yalnızca gösterim için. */
+  quantityDiscount: number | null;
+  /** Uygulanan adet indirimi yüzdesi (ör. 10 → %10). */
+  quantityDiscountPercent: number | null;
   customLayerHeight: number | null;
   customInfillPercentage: number | null;
   customTimeMultiplier: number | null;
@@ -633,6 +644,9 @@ async function priceCart(input: QuoteInput): Promise<PricedCart> {
   const resolvedItems: ResolvedItem[] = [];
   const resolvedStoreItems: ResolvedStoreItem[] = [];
   const engine = new PricingEngine(supabase);
+  // Kademeler tek sorguda alınır; `priceCart` her kalem için yüzdeyi buradan
+  // hesaplar (`PricingEngine` içinde kalem başına ayrı sorgu yapılmasın).
+  const quantityDiscountTiers = await engine.getQuantityDiscountTiers();
   // Sepet genelinde stok talebi (malzeme+renk gruplari) — bkz. resolvePreorder
   const stockClaims = new Map<string, number>();
 
@@ -776,6 +790,15 @@ async function priceCart(input: QuoteInput): Promise<PricedCart> {
     const unitPrice = round(result.breakdown.pricePerUnit);
     const totalPrice = round(result.totalPrice);
 
+    // Adet indirimi `totalPrice` içinde zaten uygulanmış. Tutarı ve yüzdeyi
+    // ayrıca taşıyoruz ki sepet "fiyat neden düştü"yü gösterebilsin.
+    const quantityDiscount = result.breakdown.quantityDiscount ?? null;
+    const appliedTier = selectDiscountTier(quantity, quantityDiscountTiers);
+    const quantityDiscountPercent =
+      quantityDiscount && quantityDiscount > 0
+        ? appliedTier?.discountPercent ?? null
+        : null;
+
     resolvedItems.push({
       id: randomUUID(),
       fileId: file.id,
@@ -800,6 +823,8 @@ async function priceCart(input: QuoteInput): Promise<PricedCart> {
       isPreorder: preorder.isPreorder,
       preorderDiscountPercent: preorder.discountPercent,
       estimatedRestockDays: preorder.restockDays,
+      quantityDiscount,
+      quantityDiscountPercent,
       customLayerHeight: item.customLayerHeight ?? null,
       customInfillPercentage:
         printSettings.printSettingId === null && technology !== 'SLA'
@@ -926,6 +951,7 @@ async function priceCart(input: QuoteInput): Promise<PricedCart> {
     settings,
     resolvedItems,
     resolvedStoreItems,
+    quantityDiscountTiers,
     coupon,
     couponIssue,
     serviceSubtotal,
@@ -957,6 +983,8 @@ export async function quoteOrder(input: QuoteInput): Promise<OrderQuote> {
       isPreorder: item.isPreorder,
       preorderDiscountPercent: item.preorderDiscountPercent,
       estimatedRestockDays: item.estimatedRestockDays,
+      quantityDiscount: item.quantityDiscount,
+      quantityDiscountPercent: item.quantityDiscountPercent,
     })),
     storeItems: priced.resolvedStoreItems.map((item, index) => ({
       index,
@@ -967,6 +995,7 @@ export async function quoteOrder(input: QuoteInput): Promise<OrderQuote> {
       vatRate: priced.settings.vatRate,
       shippingFee: priced.settings.shippingFee,
       freeShippingMinAmount: priced.settings.freeShippingMinAmount,
+      quantityDiscountTiers: priced.quantityDiscountTiers,
     },
     coupon: priced.coupon
       ? { applied: true }
@@ -1026,6 +1055,8 @@ export async function createOrder(input: CreateOrderInput): Promise<CreatedOrder
         isPreorder: item.isPreorder,
         preorderDiscountPercent: item.preorderDiscountPercent,
         estimatedRestockDays: item.estimatedRestockDays,
+        quantityDiscount: item.quantityDiscount,
+        quantityDiscountPercent: item.quantityDiscountPercent,
       })),
       storeItems: resolvedStoreItems.map((item, index) => ({
         index,

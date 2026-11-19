@@ -63,6 +63,19 @@ export interface OrderQuoteResult {
 }
 
 /**
+ * Son başarılı teklifin ayarları (KDV/kargo/adet indirimi kademeleri).
+ *
+ * Sepet sayfası kademeleri buradan okur: "10 adette %5 indirim" gibi bir
+ * sonraki eşik, teklifin kendi ayarlarıyla gösterilir; istemcide ikinci bir
+ * varsayılan kademe listesi tutulmaz.
+ */
+let lastQuoteSettings: OrderQuote['settings'] | null = null;
+
+export function getLastQuoteSettings(): OrderQuote['settings'] | null {
+  return lastQuoteSettings;
+}
+
+/**
  * Sunucudan sepet teklifini ister. Ağ/oturum hatalarında `error` döner;
  * çağıran taraf siparişi engellemek yerine mevcut (yerel) fiyatlarla devam
  * edebilir — nihai fiyat yine sunucuda hesaplanır.
@@ -93,7 +106,9 @@ export async function requestOrderQuote(
       };
     }
 
-    return { quote: data.quote as OrderQuote, error: null };
+    const quote = data.quote as OrderQuote;
+    lastQuoteSettings = quote.settings;
+    return { quote, error: null };
   } catch {
     return {
       quote: null,

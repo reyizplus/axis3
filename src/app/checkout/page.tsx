@@ -9,7 +9,7 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import {
-  ShoppingCart, MapPin, CreditCard, CheckCircle2, AlertCircle, Loader2, ArrowLeft, Package, Clock, Building2, Eye, Store, Printer, Palette, Truck, ShieldCheck, RefreshCw, User, Phone, FileText, Sparkles, ChevronRight,
+  ShoppingCart, MapPin, CreditCard, CheckCircle2, AlertCircle, Loader2, ArrowLeft, Package, Clock, Building2, Eye, Store, Printer, Palette, Truck, ShieldCheck, RefreshCw, User, Phone, FileText, Sparkles, ChevronRight, BadgePercent,
 } from 'lucide-react';
 import { cartService, type CartItem } from '@/lib/cart/cart-service';
 import { createClient } from '@/lib/supabase/client';
@@ -388,6 +388,9 @@ export default function CheckoutPage() {
   const subtotalStore = storeItems.reduce((s, i) => s + i.totalPrice, 0);
   const subtotalItems = subtotal3D + subtotalStore;
 
+  /** Adet indirimlerinin toplamı; tutar zaten kalem fiyatlarına yansımıştır. */
+  const quantityDiscountTotal = cartItems.reduce((s, i) => s + (i.quantityDiscount ?? 0), 0);
+
   // The code applied in the cart is read back here; any cart change since then
   // is re-validated silently before the order is sent.
   const couponState = useCoupon({
@@ -666,6 +669,14 @@ export default function CheckoutPage() {
                               <div className="text-right shrink-0">
                                 <p className="text-sm font-bold text-primary">{item.totalPrice.toFixed(2)} TL</p>
                                 {item.quantity > 1 && <p className="text-[10px] text-muted-foreground">{item.unitPrice.toFixed(2)} TL/adet</p>}
+                                {(item.quantityDiscount ?? 0) > 0 && (
+                                  <p className="mt-1 inline-flex items-center gap-1 rounded-md border border-green-500/25 bg-green-500/10 px-1.5 py-0.5 text-[10px] font-medium text-green-600">
+                                    <BadgePercent className="h-2.5 w-2.5" />
+                                    Adet indirimi
+                                    {item.quantityDiscountPercent != null && ` (%${item.quantityDiscountPercent})`}
+                                    {`: -${item.quantityDiscount!.toFixed(2)} TL`}
+                                  </p>
+                                )}
                               </div>
                             </div>
                             <div className="flex items-center gap-3 mt-2 text-[11px] text-muted-foreground">
@@ -716,6 +727,12 @@ export default function CheckoutPage() {
                   <div className="space-y-2.5 text-sm">
                     {subtotal3D > 0 && <div className="flex justify-between"><span className="text-muted-foreground">3D Baskı</span><span className="font-medium">{subtotal3D.toFixed(2)} TL</span></div>}
                     {subtotalStore > 0 && <div className="flex justify-between"><span className="text-muted-foreground">Mağaza</span><span className="font-medium">{subtotalStore.toFixed(2)} TL</span></div>}
+                    {quantityDiscountTotal > 0 && (
+                      <p className="flex items-center gap-1.5 rounded-lg bg-green-500/[0.07] px-2 py-1.5 text-xs font-medium text-green-600">
+                        <BadgePercent className="h-3.5 w-3.5 shrink-0" />
+                        Adet indirimi uygulandı: {quantityDiscountTotal.toFixed(2)} TL tasarruf
+                      </p>
+                    )}
                     <div className="flex justify-between">
                       <span className="text-muted-foreground">Kargo</span>
                       {computedShipping > 0 ? <span className="font-medium">{computedShipping.toFixed(2)} TL</span> : <span className="text-green-600 font-medium">Ücretsiz</span>}

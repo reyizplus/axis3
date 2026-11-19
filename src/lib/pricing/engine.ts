@@ -442,7 +442,12 @@ export class PricingEngine {
     return { premiumPercentage: technology === 'SLA' ? 20 : 15 };
   }
 
-  private async getQuantityDiscountTiers(): Promise<QuantityDiscountTier[]> {
+  /**
+   * Public: `quoteOrder` aynı kademeleri sepet/checkout'a bildirir, böylece
+   * müşteri "fiyat neden düştü" sorusunun cevabını (yüzde ve sonraki kademe)
+   * görebilir.
+   */
+  async getQuantityDiscountTiers(): Promise<QuantityDiscountTier[]> {
     try {
       const { data } = await (this.supabase.from('global_settings') as any)
         .select('value')

@@ -249,7 +249,13 @@ function applyBuffer(
   };
 }
 
-function selectDiscountTier(
+/**
+ * Adede göre uygulanacak indirim kademesini seçer.
+ *
+ * Sepet/checkout bu fonksiyonu, uygulanan indirimin yüzdesini müşteriye
+ * gösterebilmek için kullanır; fiyat yine `computeQuote` içinde hesaplanır.
+ */
+export function selectDiscountTier(
   quantity: number,
   tiers: QuantityDiscountTier[]
 ): QuantityDiscountTier | null {

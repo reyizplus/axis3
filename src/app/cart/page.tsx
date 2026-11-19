@@ -10,7 +10,7 @@ import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import {
-  ShoppingCart, Trash2, Plus, Minus, ArrowRight, Package, Clock, AlertCircle, Palette, Store, Printer, Truck, Gift, Loader2, Sparkles, ShoppingBag,
+  ShoppingCart, Trash2, Plus, Minus, ArrowRight, Package, Clock, AlertCircle, Palette, Store, Printer, Truck, Gift, Loader2, Sparkles, ShoppingBag, BadgePercent,
 } from 'lucide-react';
 import { cartService, type CartItem } from '@/lib/cart/cart-service';
 import { getStoreItems, saveStoreItems, type StoreItem } from '@/lib/cart/store-cart';
@@ -41,6 +41,14 @@ function CartContent() {
   const [vatRate, setVatRate] = useState(0.20);
   const [shippingFee, setShippingFee] = useState(0);
   const [freeShippingMinAmount, setFreeShippingMinAmount] = useState(0);
+  /**
+   * Sunucunun bildirdiği adet indirimi kademeleri. Bir sonraki eşik
+   * ("10 adette %5 indirim") buradan gösterilir; fiyatın neden düştüğü
+   * böylece tahmin gerektirmez.
+   */
+  const [discountTiers, setDiscountTiers] = useState<
+    { minQty: number; discountPercent: number }[]
+  >([]);
 
   const loadCart = useCallback(async () => {
     try {
@@ -104,7 +112,8 @@ function CartContent() {
       // Beklemeyi engellememek için arka planda çalışır.
       if (items.length > 0) {
         void cartService.repriceCart().then((priced) => {
-          if (priced.length > 0) setCartItems(priced);
+          setCartItems(priced);
+          setDiscountTiers(cartService.getQuantityDiscountTiers());
         });
       }
     } catch { toast.error('Sepet yüklenemedi'); }
@@ -113,6 +122,16 @@ function CartContent() {
 
   useEffect(() => {
     loadCart();
+
+    // `cart-updated` her adet değişiminde yayılır. Burada `loadCart()` gibi ağ
+    // istekleri (dosya/ürün doğrulaması, teslimat, teklif) çalıştırmak sepeti
+    // yavaşlatıyor ve fiyatın birkaç kez değişmesine yol açıyordu. Yalnızca
+    // state senkronize edilir; fiyatı `cartService` kendi debounce'lu
+    // teklifiyle tek seferde getirir.
+    const syncCart = () => {
+      setCartItems(cartService.getItems());
+      setDiscountTiers(cartService.getQuantityDiscountTiers());
+    };
     const h = () => loadCart();
     const handleStorage = (e: StorageEvent) => {
       if (e.key?.includes('axis3_cart_') || e.key === 'axis3_cart_store') {
@@ -120,22 +139,33 @@ function CartContent() {
       }
     };
     window.addEventListener('store-cart-updated', h);
-    window.addEventListener('cart-updated', h);
+    window.addEventListener('cart-updated', syncCart);
     window.addEventListener('storage', handleStorage);
     return () => {
       window.removeEventListener('store-cart-updated', h);
-      window.removeEventListener('cart-updated', h);
+      window.removeEventListener('cart-updated', syncCart);
       window.removeEventListener('storage', handleStorage);
     };
   }, [loadCart]);
 
-  const handleServiceQuantity = async (itemId: string, q: number) => {
-    if (q < 1) return;
-    try { await cartService.updateQuantity(itemId, q); loadCart(); } catch { toast.error('Adet güncellenemedi'); }
+  const handleServiceQuantity = (itemId: string, delta: number) => {
+    // Adet, ekranın son render'ından değil localStorage'daki güncel sepetten
+    // okunur: hızlı art arda tıklamalarda tıklama kaybolmaz.
+    const current = cartService.getItems().find((i) => i.id === itemId);
+    if (!current) return;
+
+    const next = current.quantity + delta;
+    if (next < 1) return;
+
+    // Adet anında yazılır; fiyat ~200 ms sonra tek istekle sunucudan gelir.
+    // Kullanıcı art arda bassa da istekler birleşir, tutar zıplamaz.
+    void cartService
+      .updateQuantity(itemId, next)
+      .catch(() => toast.error('Adet güncellenemedi'));
   };
 
   const handleServiceRemove = async (itemId: string) => {
-    try { await cartService.removeItem(itemId); loadCart(); toast.success('Ürün sepetten kaldırıldı'); } catch { toast.error('Ürün kaldırılamadı'); }
+    try { await cartService.removeItem(itemId); toast.success('Ürün sepetten kaldırıldı'); } catch { toast.error('Ürün kaldırılamadı'); }
   };
 
   const handleStoreQuantity = (productId: string, delta: number) => {
@@ -179,6 +209,25 @@ function CartContent() {
   const summarySubtotal = subtotal - discount + computedShipping;
   const totalItems = cartItems.reduce((s, i) => s + i.quantity, 0) + storeItems.reduce((s, i) => s + i.quantity, 0);
   const hasItems = cartItems.length > 0 || storeItems.length > 0;
+
+  /** Sunucunun uyguladığı adet indirimlerinin toplamı (gösterim amaçlı). */
+  const quantityDiscountTotal = cartItems.reduce((s, i) => s + (i.quantityDiscount ?? 0), 0);
+  /** Adet değişti, sunucu fiyatı henüz gelmedi. */
+  const isPricing = cartItems.some((i) => i.pricingPending);
+
+  /**
+   * Mevcut adetten sonraki indirim eşiği. "12 adet → %5 indirim" gibi bir
+   * ipucu gösterilir; indirim olmasa bile kullanıcı neden/faydayı görür.
+   */
+  const nextTierFor = (quantity: number) => {
+    let next: { minQty: number; discountPercent: number } | null = null;
+    for (const tier of discountTiers) {
+      if (tier.minQty > quantity && (!next || tier.minQty < next.minQty)) {
+        next = tier;
+      }
+    }
+    return next;
+  };
 
   if (isLoading) {
     return (
@@ -293,19 +342,45 @@ function CartContent() {
                             <div className="flex items-center gap-2 pt-1">
                               <span className="text-xs text-muted-foreground">Adet:</span>
                               <div className="flex items-center gap-0.5">
-                                <Button variant="outline" size="icon" className="h-7 w-7 rounded-lg" onClick={() => handleServiceQuantity(item.id, item.quantity - 1)} disabled={item.quantity <= 1}>
+                                <Button variant="outline" size="icon" className="h-7 w-7 rounded-lg" onClick={() => handleServiceQuantity(item.id, -1)} disabled={item.quantity <= 1}>
                                   <Minus className="h-3 w-3" />
                                 </Button>
                                 <span className="w-9 text-center text-sm font-semibold">{item.quantity}</span>
-                                <Button variant="outline" size="icon" className="h-7 w-7 rounded-lg" onClick={() => handleServiceQuantity(item.id, item.quantity + 1)}>
+                                <Button variant="outline" size="icon" className="h-7 w-7 rounded-lg" onClick={() => handleServiceQuantity(item.id, 1)}>
                                   <Plus className="h-3 w-3" />
                                 </Button>
                               </div>
                             </div>
                           </div>
-                          <div className="flex flex-col items-end gap-2 shrink-0">
+                          <div className="flex flex-col items-end gap-1.5 shrink-0 text-right">
                             <p className="text-xs text-muted-foreground">Birim: {item.unitPrice.toFixed(2)} TL</p>
-                            <p className="text-lg font-bold text-primary">{item.totalPrice.toFixed(2)} TL</p>
+                            {item.pricingPending ? (
+                              <p className="text-sm font-semibold text-muted-foreground inline-flex items-center gap-1.5">
+                                <Loader2 className="h-3.5 w-3.5 animate-spin" /> Hesaplanıyor
+                              </p>
+                            ) : (
+                              <p className="text-lg font-bold text-primary">{item.totalPrice.toFixed(2)} TL</p>
+                            )}
+                            {!item.pricingPending && (item.quantityDiscount ?? 0) > 0 && (
+                              <span
+                                className="inline-flex items-center gap-1 rounded-md border border-green-500/25 bg-green-500/10 px-1.5 py-0.5 text-[11px] font-medium text-green-600"
+                                title="Adet arttıkça birim fiyat düşer; indirim toplam tutara yansıtılmıştır."
+                              >
+                                <BadgePercent className="h-3 w-3" />
+                                Adet indirimi
+                                {item.quantityDiscountPercent != null && ` (%${item.quantityDiscountPercent})`}
+                                {`: -${item.quantityDiscount!.toFixed(2)} TL`}
+                              </span>
+                            )}
+                            {!item.pricingPending && (() => {
+                              const next = nextTierFor(item.quantity);
+                              if (!next) return null;
+                              return (
+                                <p className="text-[11px] text-muted-foreground">
+                                  {next.minQty} adette %{next.discountPercent} indirim
+                                </p>
+                              );
+                            })()}
                             <Button variant="ghost" size="sm" className="h-7 px-2 text-xs text-destructive hover:bg-destructive/10 rounded-lg" onClick={() => handleServiceRemove(item.id)}>
                               <Trash2 className="h-3 w-3 mr-1" />Kaldır
                             </Button>
@@ -411,7 +486,13 @@ function CartContent() {
                   <div className="p-5 space-y-4">
                     <div className="flex items-center justify-between">
                       <h2 className="text-sm font-semibold">Sipariş Özeti</h2>
-                      <span className="text-xs text-muted-foreground">{totalItems} ürün</span>
+                      {isPricing ? (
+                        <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+                          <Loader2 className="h-3 w-3 animate-spin" /> Fiyatlar hesaplanıyor
+                        </span>
+                      ) : (
+                        <span className="text-xs text-muted-foreground">{totalItems} ürün</span>
+                      )}
                     </div>
 
                     <div className="space-y-2.5 text-sm">
@@ -426,6 +507,12 @@ function CartContent() {
                           <span className="text-muted-foreground">Mağaza</span>
                           <span className="font-medium">{subtotalStore.toFixed(2)} TL</span>
                         </div>
+                      )}
+                      {quantityDiscountTotal > 0 && (
+                        <p className="flex items-center gap-1.5 rounded-lg bg-green-500/[0.07] px-2 py-1.5 text-xs font-medium text-green-600">
+                          <BadgePercent className="h-3.5 w-3.5 shrink-0" />
+                          Adet indirimi uygulandı: {quantityDiscountTotal.toFixed(2)} TL tasarruf
+                        </p>
                       )}
                       {shippingFee > 0 && (
                         <div className="flex justify-between">

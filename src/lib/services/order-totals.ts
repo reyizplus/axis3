@@ -111,6 +111,13 @@ export interface PriceChangeDetails {
     isPreorder: boolean;
     preorderDiscountPercent: number | null;
     estimatedRestockDays: number | null;
+    /**
+     * Adet indirimi (TL) ve yüzdesi. Sepet bu değerleri gösterir: fiyatın
+     * neden düştüğünü müşteri görebilmeli. Sipariş fiyatlandırmasında
+     * kullanılmaz; `totalPrice` zaten indirim uygulanmış tutardır.
+     */
+    quantityDiscount: number | null;
+    quantityDiscountPercent: number | null;
   }[];
   /** İstekteki `storeItems` dizisiyle aynı sırada. */
   storeItems: {

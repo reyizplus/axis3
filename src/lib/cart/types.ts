@@ -52,6 +52,17 @@ export interface CartItem {
   isPreorder?: boolean;
   preorderDiscountPercent?: number | null;
   estimatedRestockDays?: number;
+  /**
+   * Sunucunun uyguladığı adet indirimi (TL) ve yüzdesi.
+   *
+   * `unitPrice`/`totalPrice` bu indirim düşülmüş tutarlardır; bu alanlar
+   * yalnızca "fiyat neden düştü"yü göstermek içindir. Adet değiştiğinde
+   * fiyat sunucudan tazelenir.
+   */
+  quantityDiscount?: number;
+  quantityDiscountPercent?: number | null;
+  /** Sunucu fiyatı hesaplanırken true; satırda "Hesaplanıyor" gösterilir. */
+  pricingPending?: boolean;
   customLayerHeight?: number;
   customInfillPercentage?: number;
   customTimeMultiplier?: number;
