@@ -4,6 +4,7 @@ import { AuthProvider } from '@/components/providers/auth-provider';
 import { ClientProviders } from '@/components/providers/client-providers';
 import { CustomToaster } from '@/components/ui/custom-toaster';
 import { GoogleAnalytics } from '@/components/providers/google-analytics';
+import { GoogleTagManager } from '@/components/providers/google-tag-manager';
 import { WebVitals } from '@/components/providers/web-vitals';
 import { generateMetadata as generateSEOMetadata, generateOrganizationSchema, generateWebSiteSchema } from '@/lib/utils/seo';
 import { inter, montserrat } from '@/lib/fonts';
@@ -93,6 +94,7 @@ export default function RootLayout({
             <CustomToaster />
           </AuthProvider>
         </ThemeProvider>
+        <GoogleTagManager />
         <GoogleAnalytics />
       </body>
     </html>

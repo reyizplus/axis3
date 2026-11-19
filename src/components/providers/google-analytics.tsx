@@ -52,9 +52,13 @@ export function GoogleAnalytics() {
           function gtag(){dataLayer.push(arguments);}
           gtag('consent', 'default', {
             analytics_storage: 'granted',
-            ad_storage: 'denied',
-            ad_user_data: 'denied',
-            ad_personalization: 'denied',
+            // Bu bileşen yalnızca çerez onayı verildikten sonra render edilir
+            // (tek seferde tüm isteğe bağlı çerezler kabul edilir). Reklam
+            // sinyalleri 'denied' kalırsa GTM üzerinden çalışan Google Ads
+            // dönüşüm/remarketing etiketleri hiç kaydetmez.
+            ad_storage: 'granted',
+            ad_user_data: 'granted',
+            ad_personalization: 'granted',
           });
           gtag('js', new Date());
           gtag('config', '${gaId}', {
