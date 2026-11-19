@@ -12,6 +12,8 @@
 // CURA ENGINE / SLICER TYPES
 // =====================================================
 
+import type { LinePriceModel } from './core';
+
 export interface SlicerProfile {
   layerHeight: number;
   infillPercentage: number;
@@ -205,6 +207,11 @@ export interface PricingResult {
   estimationSource?: 'gcode' | 'volume';
   /** Non-fatal configuration problems worth logging. */
   warnings?: string[];
+  /**
+   * Adetten bağımsız fiyat modeli. Sepet, adet değişiminde `priceEstimate`
+   * ile bu modelden fiyatı anında yeniden üretir (aynı kod, aynı sonuç).
+   */
+  priceModel?: LinePriceModel;
   error: string | null;
 }
 

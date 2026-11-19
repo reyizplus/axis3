@@ -3,6 +3,8 @@
  * Axis3 - Shopping Cart Type Definitions
  */
 
+import type { LinePriceModel } from '@/lib/pricing/core';
+
 export interface PriceBreakdown {
   materialCost: number;
   machineAmortizationCost: number;
@@ -63,6 +65,12 @@ export interface CartItem {
   quantityDiscountPercent?: number | null;
   /** Sunucu fiyatı hesaplanırken true; satırda "Hesaplanıyor" gösterilir. */
   pricingPending?: boolean;
+  /**
+   * Adetten bağımsız fiyat modeli (sunucudan gelir). Adet değişiminde fiyat
+   * bununla **anında** yeniden üretilir; ağ beklemesi olmaz ve sunucunun
+   * siparişte hesaplayacağı tutarla birebir aynı olur.
+   */
+  priceModel?: LinePriceModel;
   customLayerHeight?: number;
   customInfillPercentage?: number;
   customTimeMultiplier?: number;

@@ -18,6 +18,7 @@ import { PricingEngine, isSlicingEnabled } from '@/lib/pricing';
 import { normalizeVatRate, selectDiscountTier } from '@/lib/pricing/core';
 import type { PriceBreakdown as EngineBreakdown } from '@/lib/pricing/types';
 import type { QuantityDiscountTier } from '@/lib/pricing/core';
+import type { LinePriceModel } from '@/lib/pricing/core';
 import { calculateOrderTotals, hasPriceDrift } from '@/lib/services/order-totals';
 import type { PriceChangeDetails } from '@/lib/services/order-totals';
 import {
@@ -273,6 +274,11 @@ interface ResolvedItem {
   quantityDiscount: number | null;
   /** Uygulanan adet indirimi yüzdesi (ör. 10 → %10). */
   quantityDiscountPercent: number | null;
+  /**
+   * Adetten bağımsız fiyat modeli (tüketim + ücretler). Sepet adet
+   * değişiminde fiyatı bununla anında yeniden üretir.
+   */
+  priceModel: LinePriceModel | null;
   customLayerHeight: number | null;
   customInfillPercentage: number | null;
   customTimeMultiplier: number | null;
@@ -624,31 +630,45 @@ async function ensureSlicedAnalysis(
  * Böylece sepette/checkout'ta gösterilen fiyat ile siparişin gerçek fiyatı
  * aynı kurallardan üretilir; `409 price_changed` yalnızca gerçek bir
  * değişiklikte (admin fiyatı, stok, ayar) oluşur.
+ *
+ * @param verifiedUser Çağıran zaten oturumu doğruladıysa burada ikinci kez
+ *   Supabase Auth'a gidilmez. Fiyat teklifi her adet değişiminde istendiği
+ *   için bu tekrar ~200 ms gecikme demekti. Sipariş oluşturma bu parametreyi
+ *   ASLA kullanmaz; kimliği her zaman kendi doğrular.
  */
-async function priceCart(input: QuoteInput): Promise<PricedCart> {
+async function priceCart(
+  input: QuoteInput,
+  verifiedUser?: { id: string; email?: string | null }
+): Promise<PricedCart> {
   const { items, storeItems } = input;
 
   if (!items.length && !storeItems.length) {
     throw new OrderCreationError('Sepetiniz boş', 400);
   }
 
-  const authClient = await createClient();
-  const { data: { user }, error: authError } = await authClient.auth.getUser();
-  if (authError || !user) {
-    throw new OrderCreationError('Oturum süreniz dolmuş', 401);
+  let user = verifiedUser ?? null;
+  if (!user) {
+    const authClient = await createClient();
+    const { data: { user: authUser }, error: authError } = await authClient.auth.getUser();
+    if (authError || !authUser) {
+      throw new OrderCreationError('Oturum süreniz dolmuş', 401);
+    }
+    user = authUser;
   }
 
   const supabase = createServiceClient();
-  const settings = await loadSettings(supabase);
-
-  const resolvedItems: ResolvedItem[] = [];
-  const resolvedStoreItems: ResolvedStoreItem[] = [];
+  // KDV/kargo, kupon ayarları ve adet indirimi kademeleri birbirinden
+  // bağımsızdır: sırayla beklemek yerine paralel okunur (teklif her adet
+  // değişiminde istendiği için her tur gecikmeye ekleniyordu).
   const engine = new PricingEngine(supabase);
-  // Kademeler tek sorguda alınır; `priceCart` her kalem için yüzdeyi buradan
-  // hesaplar (`PricingEngine` içinde kalem başına ayrı sorgu yapılmasın).
-  const quantityDiscountTiers = await engine.getQuantityDiscountTiers();
+  const [settings, quantityDiscountTiers] = await Promise.all([
+    loadSettings(supabase),
+    engine.getQuantityDiscountTiers(),
+  ]);
   // Sepet genelinde stok talebi (malzeme+renk gruplari) — bkz. resolvePreorder
   const stockClaims = new Map<string, number>();
+  const resolvedItems: ResolvedItem[] = [];
+  const resolvedStoreItems: ResolvedStoreItem[] = [];
 
   // ---------- 3D print items ----------
   for (const item of items) {
@@ -825,6 +845,7 @@ async function priceCart(input: QuoteInput): Promise<PricedCart> {
       estimatedRestockDays: preorder.restockDays,
       quantityDiscount,
       quantityDiscountPercent,
+      priceModel: result.priceModel ?? null,
       customLayerHeight: item.customLayerHeight ?? null,
       customInfillPercentage:
         printSettings.printSettingId === null && technology !== 'SLA'
@@ -969,8 +990,11 @@ async function priceCart(input: QuoteInput): Promise<PricedCart> {
  * varsayımından doğan yanlış toplam ve ardından gelen `409 price_changed`
  * uyarısı ortadan kalkar.
  */
-export async function quoteOrder(input: QuoteInput): Promise<OrderQuote> {
-  const priced = await priceCart(input);
+export async function quoteOrder(
+  input: QuoteInput,
+  verifiedUser?: { id: string; email?: string | null }
+): Promise<OrderQuote> {
+  const priced = await priceCart(input, verifiedUser);
 
   return {
     totals: priced.totals,
@@ -985,6 +1009,7 @@ export async function quoteOrder(input: QuoteInput): Promise<OrderQuote> {
       estimatedRestockDays: item.estimatedRestockDays,
       quantityDiscount: item.quantityDiscount,
       quantityDiscountPercent: item.quantityDiscountPercent,
+      priceModel: item.priceModel ?? undefined,
     })),
     storeItems: priced.resolvedStoreItems.map((item, index) => ({
       index,
@@ -1057,6 +1082,7 @@ export async function createOrder(input: CreateOrderInput): Promise<CreatedOrder
         estimatedRestockDays: item.estimatedRestockDays,
         quantityDiscount: item.quantityDiscount,
         quantityDiscountPercent: item.quantityDiscountPercent,
+        priceModel: item.priceModel ?? undefined,
       })),
       storeItems: resolvedStoreItems.map((item, index) => ({
         index,

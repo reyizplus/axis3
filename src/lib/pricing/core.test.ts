@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { computeQuote, estimateConsumption, normalizeVatRate, PricingError } from './core';
+import {
+  buildLinePriceModel,
+  computeQuote,
+  estimateConsumption,
+  normalizeVatRate,
+  priceEstimate,
+  PricingError,
+  selectDiscountTier,
+} from './core';
 import type { QuoteInput } from './core';
 
 /**
@@ -366,6 +374,79 @@ describe('computeQuote - discounts', () => {
     expect(noDiscount.breakdown.preorderDiscount).toBeUndefined();
     expect(zeroDiscount.breakdown.preorderDiscount).toBeUndefined();
     expect(noDiscount.breakdown.totalPrice).toBeCloseTo(zeroDiscount.breakdown.totalPrice, 2);
+  });
+});
+
+/**
+ * Sepet, adet değişiminde fiyatı sunucudan gelen `LinePriceModel` ile ANINDA
+ * hesaplar (ağ beklemez). Bu testler iki şeyi garanti eder:
+ * 1. Adet indirimi YALNIZCA kademe eşiği aşıldığında devreye girer.
+ * 2. Modelden üretilen fiyat, `computeQuote` ile birebir aynıdır; yani
+ *    sepette görünen tutar siparişte sunucunun hesaplayacağı tutardır.
+ */
+describe('LinePriceModel - anında fiyat ve kademe eşiği', () => {
+  const TIERS = [
+    { minQty: 5, discountPercent: 5 },
+    { minQty: 10, discountPercent: 10 },
+    { minQty: 20, discountPercent: 15 },
+  ];
+
+  it('adet indirimini yalnızca eşik aşıldığında uygular', () => {
+    const input: QuoteInput = {
+      ...BASE,
+      rates: { ...BASE.rates, profitMultiplier: 1.3 },
+      quantityDiscountTiers: TIERS,
+    };
+
+    expect(selectDiscountTier(4, TIERS)).toBeNull();
+    expect(selectDiscountTier(5, TIERS)).toEqual({ minQty: 5, discountPercent: 5 });
+    // 6 adetten 9 adete kadar aynı kademe geçerlidir; "sürekli artan" indirim yok.
+    expect(selectDiscountTier(9, TIERS)).toEqual({ minQty: 5, discountPercent: 5 });
+    expect(selectDiscountTier(10, TIERS)).toEqual({ minQty: 10, discountPercent: 10 });
+
+    for (const quantity of [1, 2, 3, 4]) {
+      const q = computeQuote({ ...input, quantity });
+      expect(q.breakdown.quantityDiscount).toBeUndefined();
+    }
+    expect(computeQuote({ ...input, quantity: 5 }).breakdown.quantityDiscount).toBeGreaterThan(0);
+    // Eşiğin üstünde kalınca indirim tutarı da aynı kalır (adet dışında değişen yok).
+    const at9 = computeQuote({ ...input, quantity: 9 }).breakdown.quantityDiscount ?? 0;
+    const at6 = computeQuote({ ...input, quantity: 6 }).breakdown.quantityDiscount ?? 0;
+    expect(at9).toBeGreaterThan(at6); // adet arttığı için toplam tutar büyür
+  });
+
+  it('modelden hesaplanan fiyat computeQuote ile birebir aynıdır', () => {
+    const input: QuoteInput = {
+      ...BASE,
+      rates: { ...BASE.rates, profitMultiplier: 1.3, riskPercentage: 15 },
+      preorderDiscountPercent: null,
+      quantityDiscountTiers: TIERS,
+    };
+
+    // Model adetten bağımsız üretilir; farklı adetler için yeniden fiyatlanır.
+    const model = buildLinePriceModel(input);
+
+    for (const quantity of [1, 2, 4, 5, 6, 9, 10, 11, 19, 20, 21, 50, 100]) {
+      const server = computeQuote({ ...input, quantity });
+      const cart = priceEstimate(model.estimate, model.terms, quantity);
+
+      expect(cart.breakdown.pricePerUnit).toBe(server.breakdown.pricePerUnit);
+      expect(cart.breakdown.totalPrice).toBe(server.breakdown.totalPrice);
+      expect(cart.breakdown.quantityDiscount ?? 0).toBe(
+        server.breakdown.quantityDiscount ?? 0
+      );
+    }
+  });
+
+  it('adet arttıkça birim fiyat adet indirimi dışında da düşer (tek seferlik giderler)', () => {
+    // Bu davranış bilinçli: hazırlık + servis ücreti satır başına BİR kez
+    // alınır, adede bölünür. Sepet bunu kullanıcıya açıklar.
+    const input: QuoteInput = { ...BASE, rates: { ...BASE.rates, serviceFee: 100 } };
+    const one = computeQuote({ ...input, quantity: 1 });
+    const two = computeQuote({ ...input, quantity: 2 });
+
+    expect(two.breakdown.pricePerUnit).toBeLessThan(one.breakdown.pricePerUnit);
+    expect(two.breakdown.quantityDiscount).toBeUndefined();
   });
 });
 

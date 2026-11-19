@@ -50,7 +50,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const quote = await quoteOrder(parsed.data);
+    const quote = await quoteOrder(parsed.data, { id: user.id, email: user.email });
     return NextResponse.json({ success: true, quote });
   } catch (error) {
     if (error instanceof OrderCreationError) {

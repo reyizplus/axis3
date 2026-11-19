@@ -1,11 +1,29 @@
 import type { CartItem, Cart } from './types';
 import { isMissingColumnError } from '@/lib/supabase/errors';
 import { requestOrderQuote, toOrderItemInput, getLastQuoteSettings } from './order-quote-client';
+import { priceEstimate, selectDiscountTier } from '@/lib/pricing/core';
+import type { LinePriceModel } from '@/lib/pricing/core';
+import { roundMoney } from '@/lib/utils/money';
 
 export type { CartItem } from './types';
 
 const CART_STORAGE_PREFIX = 'axis3_cart_';
 const CART_USER_KEY = 'axis3_cart_user';
+
+/**
+ * İki fiyat modeli aynı mı?
+ *
+ * Her teklif yeni bir nesne döndürür; referans karşılaştırması her zaman
+ * "değişti" der ve sepeti gereksiz yere yeniden yazar (`cart-updated` → fazla
+ * render). Modeller küçüktür (birkaç yüz bayt), değer karşılaştırması ucuzdur.
+ */
+function samePriceModel(
+  a: LinePriceModel | null | undefined,
+  b: LinePriceModel
+): boolean {
+  if (!a) return false;
+  return JSON.stringify(a) === JSON.stringify(b);
+}
 
 export class CartService {
   private syncInProgress = false;
@@ -93,11 +111,11 @@ export class CartService {
                  i.printSettingId === item.printSettingId
           );
           if (existingIndex >= 0) {
-            cart.items[existingIndex].quantity += item.quantity;
-            // Eski `birim × adet` değeri artık yanlış (adet indirimi ve satır
-            // başına giderler adede bağlı). Sunucu fiyatı gelene kadar
-            // "Hesaplanıyor" gösterilir; tutar zıplamaz.
-            cart.items[existingIndex].pricingPending = true;
+            const merged = cart.items[existingIndex];
+            merged.quantity += item.quantity;
+            // Model varsa birleşmiş adet anında fiyatlanır; yoksa sunucu
+            // fiyatı gelene kadar "Hesaplanıyor" gösterilir.
+            merged.pricingPending = !this.applyInstantPrice(merged, merged.quantity);
           } else {
             cart.items.push({ ...item });
           }
@@ -182,8 +200,9 @@ export class CartService {
       existing.unitPrice = item.unitPrice;
       // `unitPrice` tek adet fiyatıdır; toplam adet indirimiyle değişir.
       // Geçici `birim × adet` yazmak ekranda yanlış (yüksek) tutar gösterip
-      // sonra düşürüyordu. Sunucu fiyatı gelene kadar "Hesaplanıyor" gösterilir.
-      existing.pricingPending = true;
+      // sonra düşürüyordu. Model varsa fiyat anında ve doğru hesaplanır;
+      // yoksa sunucu yanıtı gelene kadar "Hesaplanıyor" gösterilir.
+      existing.pricingPending = !this.applyInstantPrice(existing, existing.quantity);
       newItem = existing;
     } else {
       newItem = {
@@ -191,6 +210,9 @@ export class CartService {
         id: this.generateId(),
         addedAt: new Date().toISOString(),
       };
+      // Fiyat modeli geldiyse tutarı burada da hesaplayabiliriz; gelmediyse
+      // sunucu teklifi belirleyici olur.
+      newItem.pricingPending = !this.applyInstantPrice(newItem, item.quantity);
       cart.items.push(newItem);
     }
 
@@ -225,13 +247,50 @@ export class CartService {
 
     if (item) {
       item.quantity = quantity;
-      // Adet anında yazılır, fiyat sunucudan gelir. `birim × adet` gibi geçici
-      // bir tutar yazmak (adet indirimi yokmuş gibi) fiyatın önce yükselip
-      // sonra düşmesine — "anlamsız oynama"ya — yol açıyordu.
-      item.pricingPending = true;
+      // Fiyat, sunucudan gelen modelle ANINDA hesaplanır: "+" tıklandığı anda
+      // tutar güncellenir, "Fiyat hesaplanıyor" beklenmez. Aynı saf fonksiyon
+      // sunucuda da çalıştığı için gösterilen tutar sipariş tutarıyla aynıdır.
+      // Model yoksa (eski sepet) tek seferlik "hesaplanıyor" durumu gösterilir.
+      const instant = this.applyInstantPrice(item, quantity);
+      item.pricingPending = !instant;
       this.saveCart(cart);
       this.enqueueSync(() => this.syncCartToDb(cart));
+      // Arka planda tazeleme: stok/ön sipariş ve yönetici ayar değişiklikleri
+      // adede bağlı olabilir. Kullanıcıyı bekletmez.
       this.scheduleReprice();
+    }
+  }
+
+  /**
+   * Adet değişimini, sunucudan gelen `priceModel` ile yerelde fiyatlar.
+   *
+   * `priceEstimate` fiyat motorunun kendi saf fonksiyonudur; sunucu da aynı
+   * fonksiyonu çağırır. Bu yüzden burada üretilen tutar bir "tahmin" değil,
+   * sunucunun siparişte hesaplayacağı tutarın aynısıdır.
+   *
+   * @returns Model yoksa veya hesaplanamazsa `false` (çağıran "hesaplanıyor"
+   *          durumuna düşer ve sunucu yanıtını bekler).
+   */
+  private applyInstantPrice(item: CartItem, quantity: number): boolean {
+    const model = item.priceModel;
+    if (!model) return false;
+
+    try {
+      const quote = priceEstimate(model.estimate, model.terms, quantity);
+      const tier = selectDiscountTier(quantity, model.terms.quantityDiscountTiers);
+      const discount = quote.breakdown.quantityDiscount ?? 0;
+
+      item.quantity = quantity;
+      item.unitPrice = roundMoney(quote.breakdown.pricePerUnit);
+      item.totalPrice = roundMoney(quote.breakdown.totalPrice);
+      item.quantityDiscount = discount;
+      item.quantityDiscountPercent =
+        discount > 0 ? tier?.discountPercent ?? null : null;
+      item.estimatedTime = quote.estimatedTime.correctedTimeHours;
+      return true;
+    } catch {
+      // Model bozuksa fiyatı uydurmuyoruz; sunucu yanıtı belirleyici olur.
+      return false;
     }
   }
 
@@ -364,6 +423,8 @@ export class CartService {
       estimatedRestockDays?: number | null;
       quantityDiscount?: number | null;
       quantityDiscountPercent?: number | null;
+      /** Adetten bağımsız fiyat modeli; saklanır, adet değişiminde kullanılır. */
+      priceModel?: LinePriceModel | null;
     }[]
   ): Promise<boolean> {
     if (typeof window === 'undefined') return false;
@@ -381,6 +442,7 @@ export class CartService {
 
       const changed =
         wasPending ||
+        (update.priceModel != null && !samePriceModel(item.priceModel, update.priceModel)) ||
         item.unitPrice !== update.unitPrice ||
         item.totalPrice !== update.totalPrice ||
         (typeof update.supportEnabled === 'boolean' &&
@@ -417,6 +479,9 @@ export class CartService {
       }
       if (update.quantityDiscountPercent !== undefined) {
         item.quantityDiscountPercent = update.quantityDiscountPercent ?? null;
+      }
+      if (update.priceModel != null) {
+        item.priceModel = update.priceModel;
       }
       applied = true;
     }

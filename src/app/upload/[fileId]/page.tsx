@@ -205,6 +205,10 @@ export default function UploadDetailPage() {
         isPreorder: isPreorderItem,
         preorderDiscountPercent: preorderDiscount,
         estimatedRestockDays: restockDays,
+        // Adetten bağımsız fiyat modeli: sepette adet değişince fiyat ağ
+        // beklemeden, sunucuyla birebir aynı şekilde yeniden hesaplanır.
+        priceModel: pricingResult.priceModel,
+        quantityDiscount: pricingResult.breakdown.quantityDiscount ?? 0,
         customLayerHeight: advancedMode && !isSla ? customLayerHeight : undefined,
         customInfillPercentage: advancedMode && !isSla ? customInfill : undefined,
         // Stored as a time multiplier: the engine multiplies print time by it,

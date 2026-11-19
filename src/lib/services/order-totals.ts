@@ -8,6 +8,7 @@
  */
 
 import { roundMoney } from '@/lib/utils/money';
+import type { LinePriceModel } from '@/lib/pricing/core';
 
 export { roundMoney };
 
@@ -118,6 +119,11 @@ export interface PriceChangeDetails {
      */
     quantityDiscount: number | null;
     quantityDiscountPercent: number | null;
+    /**
+     * Adetten bağımsız fiyat modeli. Sepet bunu saklar ve adet değişiminde
+     * fiyatı anında (ağ beklemeden) yeniden üretir.
+     */
+    priceModel?: LinePriceModel;
   }[];
   /** İstekteki `storeItems` dizisiyle aynı sırada. */
   storeItems: {

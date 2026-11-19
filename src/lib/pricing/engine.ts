@@ -9,8 +9,8 @@
 import { createClient } from '@/lib/supabase/client';
 import { CorrectionFactor } from './correction-factor';
 import { DeliveryCalculator } from '@/lib/utils/delivery-calculator';
-import { computeQuote, normalizeVatRate, PricingError } from './core';
-import type { QuantityDiscountTier } from './core';
+import { buildLinePriceModel, priceEstimate, normalizeVatRate, PricingError } from './core';
+import type { LinePriceModel, QuantityDiscountTier, QuoteInput } from './core';
 import { resolveMachineHourlyRate } from './machine-rate';
 import { getCachedAnalysis } from './server/analysis-cache';
 
@@ -170,7 +170,7 @@ export class PricingEngine {
       if (gcodeSource.warning) engineWarnings.push(gcodeSource.warning);
       if (gcodeSource.shouldQuery && !gcode) engineWarnings.push('gcode_analysis_missing');
 
-      const quote = computeQuote({
+      const quoteInput: QuoteInput = {
         volumeCm3: input.volumeCm3,
         quantity: input.quantity,
         technology: input.technology,
@@ -201,7 +201,13 @@ export class PricingEngine {
         },
         quantityDiscountTiers: discountTiers,
         vatRate: vat.rate,
-      });
+      };
+
+      // Adetten bağımsız model bir kez kurulur; fiyat ondan üretilir. Aynı
+      // model sepete/checkout'a gider, orada adet değişince fiyat anında ve
+      // birebir aynı şekilde yeniden hesaplanır.
+      const priceModel: LinePriceModel = buildLinePriceModel(quoteInput);
+      const quote = priceEstimate(priceModel.estimate, priceModel.terms, input.quantity);
 
       const deliveryDays = await this.deliveryCalculator.calculateSingleItemDelivery(
         quote.estimatedTime.totalOrderHours ?? quote.estimatedTime.correctedTimeHours,
@@ -223,6 +229,7 @@ export class PricingEngine {
         deliveryDays,
         estimationSource: quote.source,
         warnings: [...quote.warnings, ...engineWarnings],
+        priceModel,
         error: null,
       };
     } catch (err) {

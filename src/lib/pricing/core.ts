@@ -273,24 +273,54 @@ export function selectDiscountTier(
 }
 
 /**
- * Compute a complete quote for one line item (quantity included).
+ * Bir satırın fiyatını hesaplamak için gereken HER ŞEY, adet hariç.
  *
- * All `PriceBreakdown` subtotals are for the whole line (quantity included),
- * not per unit. `pricePerUnit` is the only per-unit value.
+ * Amaç: tüketim (dilimleme sonucu) ve ücret/katsayılar bir kez çözülür;
+ * ardından farklı adetler için fiyat saf matematikle, veritabanına hiç
+ * gitmeden üretilir. Sepet adet değişiminde bu modeli kullanır, böylece "+"
+ * tıklaması ağ beklemeden anında fiyat gösterir. Modeli sunucu üretir; istemci
+ * yalnızca aynı `priceEstimate` fonksiyonunu çağırır, bu yüzden gösterilen
+ * tutar siparişte sunucunun hesaplayacağı tutarla birebir aynıdır.
  */
-export function computeQuote(input: QuoteInput): QuoteResult {
-  const quantity = Math.floor(finite(input.quantity, 0));
-  if (!Number.isInteger(quantity) || quantity < 1 || quantity > MAX_QUANTITY) {
-    throw new PricingError(`Geçersiz adet: ${input.quantity}`);
-  }
+export interface LinePriceTerms {
+  technology: 'FDM' | 'SLA';
+  costPerGram: number;
+  wastePercentage: number;
+  supportEnabled?: boolean | null;
+  preorderDiscountPercent?: number | null;
+  labor: LaborMinutes;
+  coefficients: CorrectionCoefficients;
+  rates: PricingRates;
+  quantityDiscountTiers: QuantityDiscountTier[];
+  /** 0..1, e.g. 0.20 for %20 VAT. */
+  vatRate: number;
+}
+
+export interface LinePriceModel {
+  /** Dilimlemeden (veya SLA hacim tahmininden) gelen tüketim. */
+  estimate: ConsumptionEstimate;
+  terms: LinePriceTerms;
+}
+
+/**
+ * Fiyat için gereken tüketim tahminini üretir (gcode varsa ondan).
+ * Girdi doğrulaması da buradadır.
+ */
+export function resolveLineEstimate(input: {
+  volumeCm3: number;
+  density: number;
+  printSpeedModifier: number;
+  infillPercentage: number;
+  timeMultiplier: number;
+  technology: 'FDM' | 'SLA';
+  gcode?: GCodeConsumption | null;
+  estimation: EstimationConfig;
+}): ConsumptionEstimate {
   if (!Number.isFinite(input.volumeCm3) || input.volumeCm3 <= 0) {
     throw new PricingError('Model hacmi geçersiz');
   }
   if (!Number.isFinite(input.density) || input.density <= 0) {
     throw new PricingError('Malzeme yoğunluğu tanımlı değil');
-  }
-  if (!Number.isFinite(input.costPerGram) || input.costPerGram <= 0) {
-    throw new PricingError('Malzeme birim fiyatı tanımlı değil');
   }
 
   // FDM fiyatı yalnızca gerçek dilimlemeden üretilir. Hacim tahminine düşmek
@@ -301,11 +331,6 @@ export function computeQuote(input: QuoteInput): QuoteResult {
       'FDM fiyatı gerçek dilimleme sonucu olmadan hesaplanamaz'
     );
   }
-
-  const vatRate = normalizeVatRate(input.vatRate);
-
-  const wastePercentage = clamp(finite(input.wastePercentage, 0), 0, 100);
-  const warnings: string[] = [];
 
   const rawEstimate = input.gcode
     ? normalizeGCode(input.gcode, input.estimation)
@@ -321,19 +346,90 @@ export function computeQuote(input: QuoteInput): QuoteResult {
 
   // Buffer yalnızca tahmin içindir. Ölçülmüş bir G-Code gramına da %5 eklemek
   // "gerçek dilimleme" etiketini yalancı yapar ve fiyatı yukarı sapıtır.
-  const estimate =
-    rawEstimate.source === 'gcode'
-      ? rawEstimate
-      : applyBuffer(rawEstimate, input.estimation.filamentBufferMultiplier);
+  return rawEstimate.source === 'gcode'
+    ? rawEstimate
+    : applyBuffer(rawEstimate, input.estimation.filamentBufferMultiplier);
+}
+
+/** `computeQuote` girdisinden, adetten bağımsız fiyat modelini üretir. */
+export function buildLinePriceModel(input: QuoteInput): LinePriceModel {
+  if (!Number.isFinite(input.costPerGram) || input.costPerGram <= 0) {
+    throw new PricingError('Malzeme birim fiyatı tanımlı değil');
+  }
+
+  return {
+    estimate: resolveLineEstimate(input),
+    terms: {
+      technology: input.technology,
+      costPerGram: input.costPerGram,
+      wastePercentage: input.wastePercentage,
+      supportEnabled: input.supportEnabled,
+      preorderDiscountPercent: input.preorderDiscountPercent,
+      labor: input.labor,
+      coefficients: input.coefficients,
+      rates: input.rates,
+      quantityDiscountTiers: input.quantityDiscountTiers,
+      vatRate: input.vatRate,
+    },
+  };
+}
+
+/**
+ * Compute a complete quote for one line item (quantity included).
+ *
+ * All `PriceBreakdown` subtotals are for the whole line (quantity included),
+ * not per unit. `pricePerUnit` is the only per-unit value.
+ */
+export function computeQuote(input: QuoteInput): QuoteResult {
+  const quantity = Math.floor(finite(input.quantity, 0));
+  if (!Number.isInteger(quantity) || quantity < 1 || quantity > MAX_QUANTITY) {
+    throw new PricingError(`Geçersiz adet: ${input.quantity}`);
+  }
+
+  const model = buildLinePriceModel(input);
+  return priceEstimate(model.estimate, model.terms, quantity);
+}
+
+/**
+ * Adet verilen bir satırın fiyatını üretir (saf; veritabanı/ağ yok).
+ *
+ * Sepet, adet değişiminde bu fonksiyonu doğrudan çağırır: sunucudan gelen
+ * `LinePriceModel` + yeni adet = anında ve sunucuyla aynı tutar. Sipariş
+ * oluşturma da aynı fonksiyonu kullanır, dolayısıyla iki taraf ayrışamaz.
+ */
+export function priceEstimate(
+  estimate: ConsumptionEstimate,
+  terms: LinePriceTerms,
+  rawQuantity: number
+): QuoteResult {
+  const quantity = Math.floor(finite(rawQuantity, 0));
+  if (!Number.isInteger(quantity) || quantity < 1 || quantity > MAX_QUANTITY) {
+    throw new PricingError(`Geçersiz adet: ${rawQuantity}`);
+  }
+  if (!Number.isFinite(terms.costPerGram) || terms.costPerGram <= 0) {
+    throw new PricingError('Malzeme birim fiyatı tanımlı değil');
+  }
+  // Model istemciden gelebilir; FDM'in hacim tahminiyle fiyatlanmasına izin
+  // vermiyoruz (sunucudaki kuralla aynı).
+  if (terms.technology === 'FDM' && estimate.source !== 'gcode') {
+    throw new PricingError(
+      'FDM fiyatı gerçek dilimleme sonucu olmadan hesaplanamaz'
+    );
+  }
+
+  const vatRate = normalizeVatRate(terms.vatRate);
+
+  const wastePercentage = clamp(finite(terms.wastePercentage, 0), 0, 100);
+  const warnings: string[] = [];
 
   // ---------- Material (whole line) ----------
   const wasteMultiplier = 1 + wastePercentage / 100;
   const materialSubtotal = roundMoney(
-    estimate.totalGrams * quantity * input.costPerGram * wasteMultiplier
+    estimate.totalGrams * quantity * terms.costPerGram * wasteMultiplier
   );
 
   // ---------- Time ----------
-  const coefficients = input.coefficients;
+  const coefficients = terms.coefficients;
   const warmUpHours = Math.max(0, finite(coefficients.warmUpMinutes, 0)) / 60;
   const calibrationHours = Math.max(0, finite(coefficients.calibrationMinutes, 0)) / 60;
   const bedPrepHours = Math.max(0, finite(coefficients.bedPrepMinutes, 0)) / 60;
@@ -345,38 +441,38 @@ export function computeQuote(input: QuoteInput): QuoteResult {
   const totalOrderHours = correctedPerUnitHours * quantity + setupHours;
 
   // ---------- Machine (whole line) ----------
-  const machineHourlyRate = Math.max(0, finite(input.rates.machineHourlyRate, 0));
+  const machineHourlyRate = Math.max(0, finite(terms.rates.machineHourlyRate, 0));
   if (machineHourlyRate === 0) {
     warnings.push('Makine saatlik ücreti 0; makine maliyeti fiyata eklenmiyor.');
   }
   const machineSubtotal = roundMoney(totalOrderHours * machineHourlyRate);
 
   // ---------- Electricity (whole line) ----------
-  const electricityRate = Math.max(0, finite(input.rates.electricityRatePerHour, 0));
+  const electricityRate = Math.max(0, finite(terms.rates.electricityRatePerHour, 0));
   const electricitySubtotal = roundMoney(totalOrderHours * electricityRate);
 
   // ---------- Labor (file prep once, the rest per part) ----------
-  const filePrepMinutes = Math.max(0, finite(input.labor.filePrepMinutes, 0));
+  const filePrepMinutes = Math.max(0, finite(terms.labor.filePrepMinutes, 0));
 
   // Destek ayıklama yalnızca gerçekten destek varsa işçilik doğurur. Destek
   // kapalıysa ya da ölçülen G-Code'da destek gramı 0 ise bu süre fiyata
   // eklenmiyordu; "destek yok ama 15 dk destek temizliği" sessiz bir fazla
   // ücretlendirmeydi. Hacim tahmininde (SLA) destek varsayılır.
   const supportPresent =
-    input.supportEnabled === false
+    terms.supportEnabled === false
       ? false
       : estimate.source === 'gcode'
         ? estimate.supportGrams > 0
         : true;
 
   const supportRemovalPerPart = supportPresent
-    ? Math.max(0, finite(input.labor.supportRemovalMinutes, 0))
+    ? Math.max(0, finite(terms.labor.supportRemovalMinutes, 0))
     : 0;
-  const postProcessingPerPart = Math.max(0, finite(input.labor.postProcessingMinutes, 0));
+  const postProcessingPerPart = Math.max(0, finite(terms.labor.postProcessingMinutes, 0));
 
   const laborMinutesTotal =
     filePrepMinutes + (supportRemovalPerPart + postProcessingPerPart) * quantity;
-  const laborHourlyRate = Math.max(0, finite(input.rates.laborHourlyRate, 0));
+  const laborHourlyRate = Math.max(0, finite(terms.rates.laborHourlyRate, 0));
   const laborSubtotal = roundMoney((laborMinutesTotal / 60) * laborHourlyRate);
 
   // ---------- Direct cost ----------
@@ -385,14 +481,14 @@ export function computeQuote(input: QuoteInput): QuoteResult {
   );
 
   // ---------- Risk premium ----------
-  const riskPercentage = clamp(finite(input.rates.riskPercentage, 0), 0, 100);
+  const riskPercentage = clamp(finite(terms.rates.riskPercentage, 0), 0, 100);
   const riskSubtotal = roundMoney(directCost * (riskPercentage / 100));
 
   // ---------- Service fee (once per order) ----------
-  const serviceFee = roundMoney(Math.max(0, finite(input.rates.serviceFee, 0)));
+  const serviceFee = roundMoney(Math.max(0, finite(terms.rates.serviceFee, 0)));
 
   // ---------- Profit margin ----------
-  const profitMultiplier = Math.max(1, finite(input.rates.profitMultiplier, 1));
+  const profitMultiplier = Math.max(1, finite(terms.rates.profitMultiplier, 1));
   const profitBase = roundMoney(directCost + riskSubtotal + serviceFee);
   const profitSubtotal = roundMoney(profitBase * (profitMultiplier - 1));
 
@@ -402,13 +498,13 @@ export function computeQuote(input: QuoteInput): QuoteResult {
   );
 
   // ---------- Discounts ----------
-  const tier = selectDiscountTier(quantity, input.quantityDiscountTiers);
+  const tier = selectDiscountTier(quantity, terms.quantityDiscountTiers);
   let quantityDiscount = tier
     ? roundMoney(gross * (tier.discountPercent / 100))
     : undefined;
 
   const preorderPercent = clamp(
-    finite(input.preorderDiscountPercent ?? 0, 0),
+    finite(terms.preorderDiscountPercent ?? 0, 0),
     0,
     100
   );
@@ -462,7 +558,7 @@ export function computeQuote(input: QuoteInput): QuoteResult {
         (estimate.totalGrams * quantity * wastePercentage) / 100,
         2
       ),
-      unitCostPerGram: input.costPerGram,
+      unitCostPerGram: terms.costPerGram,
       subtotal: materialSubtotal,
     },
     machineAmortization: {
