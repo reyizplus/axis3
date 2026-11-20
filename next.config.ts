@@ -1,5 +1,53 @@
 import type { NextConfig } from 'next';
 
+/**
+ * Google etiketlerinin (GTM + Ads dönüşüm/remarketing) kullandığı alan adları.
+ *
+ * Dönüşüm ping'i kullanıcının ülkesine göre yerel alan adına gidebilir
+ * (TR'de `https://www.google.com.tr/pagead/1p-conversion/...`), bu yüzden
+ * `google.com` ile birlikte `google.com.tr` de açık. CSP'de `*.google.com`
+ * `google.com.tr`yi KAPSAMAZ; ikisi ayrı yazılmalı.
+ */
+const GOOGLE_SCRIPT_SRC = [
+  'https://www.googletagmanager.com',
+  'https://*.googlesyndication.com',
+  'https://*.googleadservices.com',
+  'https://*.doubleclick.net',
+  'https://www.gstatic.com',
+].join(' ');
+
+const GOOGLE_IMG_SRC = [
+  'https://*.google.com',
+  'https://*.google.com.tr',
+  'https://*.googlesyndication.com',
+  'https://*.googleadservices.com',
+  'https://*.doubleclick.net',
+  'https://*.google-analytics.com',
+  'https://www.googletagmanager.com',
+  'https://www.gstatic.com',
+].join(' ');
+
+const GOOGLE_CONNECT_SRC = [
+  'https://*.google.com',
+  'https://*.google.com.tr',
+  'https://*.googlesyndication.com',
+  'https://*.googleadservices.com',
+  'https://*.doubleclick.net',
+  'https://*.google-analytics.com',
+  'https://*.analytics.google.com',
+  'https://www.googletagmanager.com',
+  'https://www.gstatic.com',
+].join(' ');
+
+const GOOGLE_FRAME_SRC = [
+  'https://*.google.com',
+  'https://*.google.com.tr',
+  'https://*.googlesyndication.com',
+  'https://*.googleadservices.com',
+  'https://*.doubleclick.net',
+  'https://www.googletagmanager.com',
+].join(' ');
+
 const nextConfig: NextConfig = {
   // Pre-existing type errors from Supabase schema drift — run tsc --noEmit separately
   typescript: {
@@ -61,13 +109,13 @@ const nextConfig: NextConfig = {
             value: [
               "default-src 'self'",
               // GTM kapsayıcısı + Google Ads dönüşüm/remarketing etiketleri.
-              "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://*.supabase.co https://static.cloudflareinsights.com https://www.googletagmanager.com https://www.googleadservices.com https://googleads.g.doubleclick.net https://www.google.com https://pagead2.googlesyndication.com",
+              `script-src 'self' 'unsafe-inline' 'unsafe-eval' https://*.supabase.co https://static.cloudflareinsights.com ${GOOGLE_SCRIPT_SRC}`,
               "style-src 'self' 'unsafe-inline'",
-              "img-src 'self' data: blob: https://*.supabase.co https://*.iyzico.com https://www.google-analytics.com https://www.googletagmanager.com https://www.googleadservices.com https://googleads.g.doubleclick.net https://www.google.com https://pagead2.googlesyndication.com",
+              `img-src 'self' data: blob: https://*.supabase.co https://*.iyzico.com ${GOOGLE_IMG_SRC}`,
               "font-src 'self'",
-              "connect-src 'self' https://*.supabase.co https://api.iyzico.com https://sandbox-api.iyzico.com https://www.googletagmanager.com https://*.google-analytics.com https://*.analytics.google.com https://www.googleadservices.com https://googleads.g.doubleclick.net https://td.doubleclick.net https://www.google.com https://pagead2.googlesyndication.com",
+              `connect-src 'self' https://*.supabase.co https://api.iyzico.com https://sandbox-api.iyzico.com ${GOOGLE_CONNECT_SRC}`,
               // GTM önizleme/consent iframe'leri ve Ads dönüşüm iframe'leri.
-              "frame-src 'self' https://*.iyzico.com https://www.googletagmanager.com https://www.google.com https://googleads.g.doubleclick.net https://bid.g.doubleclick.net https://td.doubleclick.net",
+              `frame-src 'self' https://*.iyzico.com ${GOOGLE_FRAME_SRC}`,
               "base-uri 'self'",
               "form-action 'self'",
             ].join('; '),
