@@ -13,6 +13,8 @@ const GOOGLE_SCRIPT_SRC = [
   'https://*.googlesyndication.com',
   'https://*.googleadservices.com',
   'https://*.doubleclick.net',
+  'https://*.google-analytics.com',
+  'https://www.google.com',
   'https://www.gstatic.com',
 ].join(' ');
 
