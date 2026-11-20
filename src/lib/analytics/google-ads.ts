@@ -18,3 +18,20 @@ export function getGoogleAdsId(): string | undefined {
 
   return raw;
 }
+
+/**
+ * Dönüşüm olayının `send_to` değeri: `AW-XXXXXXXX/label`.
+ *
+ * Etiket (label) dönüşüm aksiyonuna özeldir; Google Ads panelinde dönüşüm
+ * oluşturulunca verilir. Kimlik veya etiket yoksa dönüşüm gönderilmez.
+ */
+export function getGoogleAdsConversionSendTo(): string | undefined {
+  const id = getGoogleAdsId();
+  if (!id) return undefined;
+
+  const label = (process.env.NEXT_PUBLIC_GOOGLE_ADS_CONVERSION_LABEL || '').trim();
+  // Örnek etiket: j_t-CNzh_LsdEN292p1F (harf, rakam, - ve _)
+  if (!/^[A-Za-z0-9_-]{6,}$/.test(label)) return undefined;
+
+  return `${id}/${label}`;
+}

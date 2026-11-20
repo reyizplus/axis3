@@ -27,6 +27,8 @@ import {
 import { AccordionItem } from '@/components/ui/accordion';
 import { motion } from 'framer-motion';
 import { celebrateOrderComplete } from '@/lib/celebrations/confetti';
+import { GoogleAdsConversion } from '@/components/analytics/google-ads-conversion';
+import { getGoogleAdsConversionSendTo } from '@/lib/analytics/google-ads';
 import { toast } from 'sonner';
 import Link from 'next/link';
 
@@ -133,9 +135,20 @@ function SuccessContent() {
   });
 
   const isBankTransfer = paymentMethod === 'bank_transfer';
+  // Google Ads "Sipariş Tamamlandı" dönüşümü. Kimlik veya etiket tanımlı
+  // değilse null döner ve hiçbir istek gitmez.
+  const conversionSendTo = getGoogleAdsConversionSendTo();
 
   return (
     <DashboardShell>
+      {conversionSendTo && (
+        <GoogleAdsConversion
+          sendTo={conversionSendTo}
+          value={orderAmount}
+          currency="TRY"
+          transactionId={orderNumber || orderId}
+        />
+      )}
       <div className="container mx-auto py-8 px-4 max-w-4xl">
         <motion.div
           initial={{ opacity: 0, y: 20 }}
