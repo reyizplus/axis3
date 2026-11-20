@@ -1,13 +1,14 @@
-import Script from 'next/script';
 import { getGtmContainerId } from '@/lib/analytics/gtm';
 import { getGoogleAdsId } from '@/lib/analytics/google-ads';
 
 /**
  * Google etiketi (gtag.js) — GTM kapsayıcısı ve/veya Google Ads kimliği.
  *
- * Google'ın talimatı: etiket her sayfanın `<head>` bölümünde, sunucudan gelen
- * HTML'in parçası olarak bulunmalı. `beforeInteractive` bunu garanti eder;
- * `afterInteractive` gibi istemci tarafında sonradan eklenmez.
+ * Google'ın talimatı: etiket her sayfanın `<head>` bölümünde, **sunucudan gelen
+ * HTML'in içinde** bulunmalı. Bu yüzden `next/script` kullanılmıyor: o bileşen
+ * etiketi `__next_s` kuyruğuna yazıyor, gerçek `<script src>` ancak istemci
+ * JavaScript'i çalıştıktan sonra DOM'a ekleniyor. Google'ın etiket doğrulama
+ * araçları ham HTML'i okuduğu için düz `<script>` etiketleri basılıyor.
  *
  * Tek yükleyici kullanılır (`gtag/js?id=<GTM>` varsa o, yoksa `<AW>`); aynı
  * sayfada iki Google etiketi yüklemek çift sayıma yol açar.
@@ -29,10 +30,7 @@ export function GoogleTag() {
     .map((id) => `gtag('config', '${id}');`)
     .join('\n          ');
 
-  return (
-    <>
-      <Script id="google-tag-init" strategy="beforeInteractive">
-        {`
+  const initScript = `
           window.dataLayer = window.dataLayer || [];
           function gtag(){dataLayer.push(arguments);}
           gtag('consent', 'default', {
@@ -46,12 +44,12 @@ export function GoogleTag() {
           });
           gtag('js', new Date());
           ${configLines}
-        `}
-      </Script>
-      <Script
-        src={`https://www.googletagmanager.com/gtag/js?id=${loaderId}`}
-        strategy="beforeInteractive"
-      />
+        `;
+
+  return (
+    <>
+      <script async src={`https://www.googletagmanager.com/gtag/js?id=${loaderId}`} />
+      <script dangerouslySetInnerHTML={{ __html: initScript }} />
     </>
   );
 }
