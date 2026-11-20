@@ -4,6 +4,8 @@ import { AuthProvider } from '@/components/providers/auth-provider';
 import { ClientProviders } from '@/components/providers/client-providers';
 import { CustomToaster } from '@/components/ui/custom-toaster';
 import { GoogleAnalytics } from '@/components/providers/google-analytics';
+import { GoogleAdsTag } from '@/components/providers/google-ads-tag';
+import { GoogleConsentMode } from '@/components/providers/google-consent-mode';
 import { GoogleTagManager } from '@/components/providers/google-tag-manager';
 import { WebVitals } from '@/components/providers/web-vitals';
 import { generateMetadata as generateSEOMetadata, generateOrganizationSchema, generateWebSiteSchema } from '@/lib/utils/seo';
@@ -36,6 +38,10 @@ export default function RootLayout({
   return (
     <html lang="tr" suppressHydrationWarning className={`${inter.variable} ${montserrat.variable}`}>
       <head>
+        {/* Google Ads etiketi (AW-...) — Google'ın istediği gibi <head> başında,
+            sunucudan gelen HTML'in içinde. Çerez yazımı Consent Mode ile
+            onay verilene kadar kapalıdır. */}
+        <GoogleAdsTag />
         <link rel="icon" type="image/x-icon" href="/favicon.ico" />
         <link rel="icon" type="image/png" href="/favicon.png" />
         <link rel="manifest" href="/site.webmanifest" />
@@ -81,6 +87,7 @@ export default function RootLayout({
         />
       </head>
       <body className="min-h-screen bg-background font-sans antialiased" suppressHydrationWarning>
+        <GoogleConsentMode />
         <ClientProviders />
         <WebVitals />
         <ThemeProvider

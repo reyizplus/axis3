@@ -49,17 +49,11 @@ export function GoogleAnalytics() {
       <Script id="google-analytics-init" strategy="afterInteractive">
         {`
           window.dataLayer = window.dataLayer || [];
-          function gtag(){dataLayer.push(arguments);}
-          gtag('consent', 'default', {
-            analytics_storage: 'granted',
-            // Bu bileşen yalnızca çerez onayı verildikten sonra render edilir
-            // (tek seferde tüm isteğe bağlı çerezler kabul edilir). Reklam
-            // sinyalleri 'denied' kalırsa GTM üzerinden çalışan Google Ads
-            // dönüşüm/remarketing etiketleri hiç kaydetmez.
-            ad_storage: 'granted',
-            ad_user_data: 'granted',
-            ad_personalization: 'granted',
-          });
+          window.gtag = window.gtag || function(){ window.dataLayer.push(arguments); };
+          // Consent Mode varsayılanı Google Ads etiketi tarafından 'denied'
+          // olarak kurulur; GA yalnızca çerez onayından sonra yüklendiği için
+          // analiz depolamasını burada açıkça açıyoruz.
+          gtag('consent', 'update', { analytics_storage: 'granted' });
           gtag('js', new Date());
           gtag('config', '${gaId}', {
             page_path: window.location.pathname,

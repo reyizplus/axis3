@@ -65,9 +65,9 @@ const nextConfig: NextConfig = {
               "style-src 'self' 'unsafe-inline'",
               "img-src 'self' data: blob: https://*.supabase.co https://*.iyzico.com https://www.google-analytics.com https://www.googletagmanager.com https://www.googleadservices.com https://googleads.g.doubleclick.net https://www.google.com https://pagead2.googlesyndication.com",
               "font-src 'self'",
-              "connect-src 'self' https://*.supabase.co https://api.iyzico.com https://sandbox-api.iyzico.com https://www.googletagmanager.com https://*.google-analytics.com https://*.analytics.google.com https://www.googleadservices.com https://googleads.g.doubleclick.net https://www.google.com https://pagead2.googlesyndication.com",
+              "connect-src 'self' https://*.supabase.co https://api.iyzico.com https://sandbox-api.iyzico.com https://www.googletagmanager.com https://*.google-analytics.com https://*.analytics.google.com https://www.googleadservices.com https://googleads.g.doubleclick.net https://td.doubleclick.net https://www.google.com https://pagead2.googlesyndication.com",
               // GTM önizleme/consent iframe'leri ve Ads dönüşüm iframe'leri.
-              "frame-src 'self' https://*.iyzico.com https://www.googletagmanager.com https://www.google.com https://googleads.g.doubleclick.net https://bid.g.doubleclick.net",
+              "frame-src 'self' https://*.iyzico.com https://www.googletagmanager.com https://www.google.com https://googleads.g.doubleclick.net https://bid.g.doubleclick.net https://td.doubleclick.net",
               "base-uri 'self'",
               "form-action 'self'",
             ].join('; '),
